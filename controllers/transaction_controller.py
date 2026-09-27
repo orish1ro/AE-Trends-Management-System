@@ -23,6 +23,7 @@ class TransactionController:
         # UI Action Connections
         self.status_view.status_changed.connect(self.handle_status_update)
         self.status_view.confirm_requested.connect(self.handle_order_confirmation)
+        self.status_view.cancel_requested.connect(self.handle_order_cancellation)
         self.status_view.view_requested.connect(self.open_order_popup)
 
         self.load_orders()
@@ -132,8 +133,8 @@ class TransactionController:
         
     def handle_order_confirmation(self, order_code):
         """
-        Confirm button:
-        Order Status -> Transaction History
+        Confirm Transaction button:
+        Order Status -> Transaction History (as Completed)
         """
         success = self.txn_model.update_order_status(
             order_code,
@@ -152,10 +153,33 @@ class TransactionController:
         if self.on_order_saved:
             self.on_order_saved()
 
+    def handle_order_cancellation(self, order_code):
+        """
+        Confirm Cancellation button:
+        Order Status -> Transaction History (as Cancelled)
+        """
+        success = self.txn_model.update_order_status(
+            order_code,
+            "Cancelled"
+        )
+
+        if success:
+            QMessageBox.information(
+                self.status_view,
+                "Order Cancelled",
+                "Order has been marked as Cancelled and moved to Transaction History."
+            )
+
+            self.load_orders()
+
+        if self.on_order_saved:
+            self.on_order_saved()
+
     def handle_status_update(self, order_code, new_status):
         """
-        Only allow progress statuses.
-        Completed/Refunded/Cancelled must NOT happen here.
+        Only allow progress statuses here.
+        Completed/Refunded/Cancelled must go through their own
+        confirm/refund/cancel flows, not this dropdown-triggered path.
         """
         allowed = [
             "Pending",

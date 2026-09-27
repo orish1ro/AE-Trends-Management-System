@@ -35,16 +35,22 @@ class HistoryModel:
     # ---------------------------------------------------------------
     def get_filter_options(self):
         with self.db.get_connection() as conn:
-            platforms = [r[0] for r in conn.execute(
-                "SELECT DISTINCT PlatformName FROM Platform ORDER BY PlatformName")]
-            payment_methods = [r[0] for r in conn.execute(
-                "SELECT DISTINCT PaymentMethod FROM Payment WHERE PaymentMethod IS NOT NULL "
-                "ORDER BY PaymentMethod")]
             staff = [r[0] for r in conn.execute("SELECT DISTINCT Name FROM Staff ORDER BY Name")]
-            order_statuses = [r[0] for r in conn.execute(
-                "SELECT DISTINCT OrderStatus FROM Orders ORDER BY OrderStatus")]
-            po_statuses = [r[0] for r in conn.execute(
-                "SELECT DISTINCT Status FROM PurchaseOrder ORDER BY Status")]
+
+        # Platforms, payment methods, and statuses are fixed, canonical lists -
+        # not "whatever platform names happen to already exist in the Orders
+        # table so far". Deriving platforms from distinct existing data meant
+        # this dropdown could drift out of sync with the New Transaction
+        # form: a platform newly added there wouldn't show up here until an
+        # order actually used it, and a retired name (e.g. "TikTok Live",
+        # "FB/IG") would keep showing up here forever even after it was
+        # removed from New Transaction. Listing them directly here keeps the
+        # two screens showing the exact same set of platforms, always.
+        platforms = ["Walk-in", "Shopee", "TikTok Shop", "Lazada", "Facebook Live"]
+        payment_methods = ["Cash", "GCash", "Online Banking"]
+        order_statuses = ["Completed", "Refunded", "Cancelled"]
+        po_statuses = ["Pending", "Received", "Cancelled"]
+
         return {
             "platforms": platforms,
             "payment_methods": payment_methods,
@@ -70,7 +76,7 @@ class HistoryModel:
             JOIN Platform pl ON pl.PlatformID = o.PlatformID
             JOIN Staff st ON st.StaffID = o.StaffID
             LEFT JOIN Payment p ON p.OrderID = o.OrderID
-            WHERE o.OrderStatus = 'Completed'
+            WHERE o.OrderStatus IN ('Completed', 'Refunded', 'Cancelled')
         """
         params = []
         if search:
@@ -108,9 +114,10 @@ class HistoryModel:
                 "kind": "order",
                 "id": r["OrderID"],
                 "code": order_code(r["OrderID"]),
-                "customer": r["CustomerName"],
-                "platform": r["PlatformName"],
+                "customer": r["CustomerName"] if r["CustomerName"] else "Walk-in Customer",
+                "platform": r["PlatformName"],  
                 "date": nice_date(r["OrderDate"]),
+                "raw_date": r["OrderDate"],
                 "payment_method": r["PaymentMethod"] or "-",
                 "payment_status": r["PaymentStatus"] or "Unpaid",
                 "processed_by": r["StaffName"],
@@ -241,6 +248,7 @@ class HistoryModel:
                 "code": po_code(r["PurchaseOrderID"]),
                 "supplier": r["SupplierName"],
                 "date": nice_date(r["OrderDate"]),
+                "raw_date": r["OrderDate"],
                 "processed_by": r["StaffName"],
                 "quantity": r["TotalQty"],
                 "total": r["TotalCost"],
@@ -298,7 +306,7 @@ class HistoryModel:
         orders = self.get_customer_orders(date_from=date_from, date_to=date_to)
         purchases = self.get_inventory_purchases(date_from=date_from, date_to=date_to)
         completed = sum(1 for o in orders if o["status"] == "Completed")
-        cancelled = sum(1 for o in orders if o["status"] == "Refunded")  # closest existing status
+        cancelled = sum(1 for o in orders if o["status"] in ("Refunded", "Cancelled"))
         sales_revenue = sum(o["total"] for o in orders)
         purchase_cost = sum(p["total"] for p in purchases)
         return {

@@ -42,6 +42,36 @@ class POModel:
             for r in rows
         ]
 
+    def get_all_po_items(self, limit=200):
+        """Every line item across every purchase order (Pending and
+        Received), most recent order first. Used by the Inventory 'Add
+        Product' dialog so a product can be imported straight from what
+        was purchased instead of retyping it."""
+        query = """
+            SELECT po.PurchaseOrderID, po.OrderDate, po.Status,
+                   s.SupplierName, p.ProductName, pod.Quantity, pod.UnitCost
+            FROM PurchaseOrderDetails pod
+            JOIN PurchaseOrder po ON po.PurchaseOrderID = pod.PurchaseOrderID
+            JOIN Supplier s ON s.SupplierID = po.SupplierID
+            JOIN Product p ON p.ProductID = pod.ProductID
+            ORDER BY po.PurchaseOrderID DESC, pod.PODetailsID
+            LIMIT ?
+        """
+        with self.db.get_connection() as conn:
+            rows = conn.execute(query, (limit,)).fetchall()
+        return [
+            {
+                "po_number": po_number(r["PurchaseOrderID"]),
+                "supplier": r["SupplierName"],
+                "product_name": r["ProductName"],
+                "quantity": r["Quantity"],
+                "unit_cost": r["UnitCost"],
+                "status": r["Status"],
+                "order_date": nice_date(r["OrderDate"]),
+            }
+            for r in rows
+        ]
+
     def get_po_details(self, po_code):
         try:
             po_id = int(po_code.split("-")[-1])

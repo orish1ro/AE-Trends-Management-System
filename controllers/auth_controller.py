@@ -62,46 +62,55 @@ class AuthController:
             QMessageBox.warning(self.login_view, "Error", "Username already exists. Choose another.")
 
     def init_app_controllers(self, user):
+        # StaffID is required (NOT NULL) on Product, Orders and PurchaseOrder,
+        # so every model that can write those tables needs to know who is logged in.
         staff_id = user["id"]
         inv_model = InventoryModel(self.db, staff_id)
         txn_model = TransactionModel(self.db, staff_id)
         po_model = POModel(self.db, staff_id)
 
-        # 1. We inject 'on_data_changed=self.refresh_all' into Inventory
-        self.inv_ctrl = InventoryController(
-            inv_model, self.main_window.inventory_view, on_data_changed=self.refresh_all
-        )
-        
+        self.inv_ctrl = InventoryController(inv_model, self.main_window.inventory_view, po_model=po_model)
         self.hist_ctrl = HistoryController(HistoryModel(self.db), self.main_window.transaction_history_view)
-        
-        # 2. We inject 'on_order_saved=self.refresh_all' into Transactions
         self.txn_ctrl = TransactionController(
             txn_model, inv_model, self.main_window.record_tx_view,
-            self.main_window.order_status_view, on_order_saved=self.refresh_all
-        )
-        
-        # 3. We inject 'on_po_saved=self.refresh_all' into Purchase Orders
+            self.main_window.order_status_view, on_order_saved=self.hist_ctrl.load)
         self.po_ctrl = POController(
-            po_model, self.main_window.purchase_orders_view, on_po_saved=self.refresh_all
-        )
-        
+            po_model, self.main_window.purchase_orders_view,
+            on_po_saved=self._handle_po_saved, inv_model=inv_model)
         self.rep_ctrl = ReportController(self.db, self.main_window.reports_view, self.main_window.dashboard_view)
         self.main_window.dashboard_view.date_range_changed.connect(self.rep_ctrl.load_dashboard_range)
 
-        # Initialize default date range, then trigger the first global load
-        self.rep_ctrl.load_dashboard_range("Today")
-        self.refresh_all()
+        # Whenever inventory is written to (product added/edited), keep the
+        # Purchase Order product dropdown in sync as well, on top of the
+        # Inventory page's own table refresh.
+        self.inv_ctrl.on_data_changed = self._handle_inventory_changed
 
-    def refresh_all(self):
-        """Global refresh: Updates all screens instantly without restarting."""
         self.inv_ctrl.load_products()
         self.txn_ctrl.load_catalog()
         self.txn_ctrl.load_orders()
         self.po_ctrl.load_po_history()
+        self.po_ctrl.refresh_available_products()
+
+        self.rep_ctrl.load_reports()
         self.hist_ctrl.load()
-        
-        # This forces the Dashboard & Reports to recalculate using their active date range
-        self.rep_ctrl.load_reports() 
+
+        self.rep_ctrl.load_dashboard_range("Today")
+
+
+    def _handle_inventory_changed(self):
+        """Inventory data changed (product added/edited/archived): refresh
+        the Inventory page itself, plus anything else that mirrors product
+        data, so it never goes stale."""
+        self.inv_ctrl.load_products()
+        self.po_ctrl.refresh_available_products()
+
+    def _handle_po_saved(self):
+        """A Purchase Order was created or marked Received (which restocks
+        or auto-creates products): refresh transaction history, inventory,
+        and the PO product dropdown so everything stays consistent."""
+        self.hist_ctrl.load()
+        self.inv_ctrl.load_products()
+        self.po_ctrl.refresh_available_products()
 
     def handle_logout(self):
         self.main_window.hide()

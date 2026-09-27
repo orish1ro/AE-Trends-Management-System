@@ -1,10 +1,11 @@
 from PyQt6.QtWidgets import QMessageBox
 
 class POController:
-    def __init__(self, model, view, on_po_saved=None):
+    def __init__(self, model, view, on_po_saved=None, inv_model=None):
         self.model = model
         self.view = view
         self.on_po_saved = on_po_saved
+        self.inv_model = inv_model
         
         # We connect the new dictionary-based signal to our updated submit function
         self.view.submit_order_requested.connect(self.handle_submit_po)
@@ -12,6 +13,15 @@ class POController:
         
         # Connect the new Mark as Received button
         self.view.mark_received_requested.connect(self.handle_mark_received)
+
+        # Refresh the product dropdown from live inventory every time the
+        # "New Purchase Order" panel is opened, so it always reflects
+        # what's currently in stock instead of a fixed placeholder list.
+        self.view.panel_open_requested.connect(self.refresh_available_products)
+
+    def refresh_available_products(self):
+        if self.inv_model:
+            self.view.set_available_products(self.inv_model.get_all_products())
 
     def load_po_history(self):
         pos = self.model.get_all_po()

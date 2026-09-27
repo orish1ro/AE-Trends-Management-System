@@ -234,6 +234,7 @@ class ReportsView(QWidget):
         self.kpi_revenue = self._kpi_card(row, "Total Revenue", "growth")
         self.kpi_cogs = self._kpi_card(row, "Cost of Goods Sold", "sub")
         self.kpi_gross = self._kpi_card(row, "Gross Profit", "margin")
+        self.kpi_net = self._kpi_card(row, "Net Profit", "net")
         return row
 
     def _kpi_card(self, parent_layout, title, footer_kind):
@@ -290,6 +291,10 @@ class ReportsView(QWidget):
             toggle_row.addWidget(btn)
         top_row.addLayout(toggle_row)
         v.addLayout(top_row)
+
+        self.pl_hint_label = QLabel("")
+        self.pl_hint_label.setStyleSheet(f"font-size: 10px; color: {MUTED}; {RESET}")
+        v.addWidget(self.pl_hint_label)
 
         self.pl_chart = LineAreaChart()
         self.pl_chart.setMinimumHeight(260)
@@ -398,7 +403,7 @@ class ReportsView(QWidget):
         title.setStyleSheet(f"font-size: 13px; font-weight: 800; padding: 13px 16px 8px; color: {INK}; {RESET}")
         v.addWidget(title)
         self.top_products_table = self._table(
-            ["PRODUCT NAME", "UNITS SOLD", "REVENUE", "PROFIT", "MARGIN"]
+            ["PRODUCT NAME", "UNITS SOLD", "COST", "REVENUE", "PROFIT", "MARGIN", "STATUS"]
         )
         self.top_products_table.setMinimumHeight(230)
         v.addWidget(self.top_products_table)
@@ -820,17 +825,55 @@ class ReportsView(QWidget):
         self.kpi_cogs["footer"].setText(f"Inventory spend: {money(kpis['inventory_spend'])}")
 
         self.kpi_gross["value"].setText(money(kpis["gross_profit"]))
-        self.kpi_gross["footer"].setText(f"{kpis['gross_margin']:.1f}% margin")
-        self.kpi_gross["footer"].setStyleSheet(f"font-size: 10.5px; font-weight: 700; color: {GOLD_HOVER}; {RESET}")
+        self.kpi_gross["value"].setStyleSheet(
+            f"font-size: 19px; font-weight: 800; color: {DANGER if kpis['gross_profit'] < 0 else INK}; {RESET}"
+        )
+        is_palugi = kpis["gross_profit"] < 0
+        label = "Loss" if is_palugi else "margin"
+        self.kpi_gross["footer"].setText(f"{abs(kpis['gross_margin']):.1f}% {label}")
+        self.kpi_gross["footer"].setStyleSheet(
+            f"font-size: 10.5px; font-weight: 700; color: {DANGER if is_palugi else GOLD_HOVER}; {RESET}"
+        )
+
+        # Net Profit here = Revenue vs. Inventory Spend (cash actually spent
+        # restocking this period) -- a simpler, cash-based check than Gross
+        # Profit. Negative means the money spent buying stock this period
+        # hasn't come back through sales yet.
+        net_profit = kpis["net_profit"]
+        not_returned = net_profit < 0
+        self.kpi_net["value"].setText(money(net_profit))
+        self.kpi_net["value"].setStyleSheet(
+            f"font-size: 19px; font-weight: 800; color: {DANGER if not_returned else INK}; {RESET}"
+        )
+        if not_returned:
+            footer_text = f"▼ {money(abs(net_profit))} not yet returned"
+            footer_color = DANGER
+        else:
+            footer_text = "▲ Money has returned"
+            footer_color = SUCCESS
+        self.kpi_net["footer"].setText(footer_text)
+        self.kpi_net["footer"].setStyleSheet(f"font-size: 10.5px; font-weight: 700; color: {footer_color}; {RESET}")
 
     def update_pl_chart(self, series, granularity):
         for btn in self.pl_group.buttons():
             btn.setChecked(btn.text() == granularity)
         labels = [p["label"] for p in series]
+        is_hourly = granularity == "Daily" and series and "T" in series[0]["date"]
+
+        if is_hourly:
+            self.pl_hint_label.setText("Showing hourly totals for the selected day")
+        elif granularity == "Daily" or not series:
+            self.pl_hint_label.setText("")
+        else:
+            span = f"{series[0]['label']} – {series[-1]['label']}"
+            self.pl_hint_label.setText(
+                f"Showing {granularity.lower()} totals for {span}, independent of the date filter above"
+            )
 
         def tooltip(idx, label, chart_series):
             point = series[idx]
-            return (f"Date: {label}\n"
+            prefix = "Hour" if is_hourly else "Date"
+            return (f"{prefix}: {label}\n"
                     f"Revenue: {money(point['revenue'])}\n"
                     f"COGS: {money(point['cogs'])}\n"
                     f"Gross Profit: {money(point['gross_profit'])}")
@@ -847,10 +890,12 @@ class ReportsView(QWidget):
 
     def _update_sales_chart(self, series, stats):
         labels = [p["label"] for p in series]
+        is_hourly = series and "T" in series[0]["date"]
 
         def tooltip(idx, label, chart_series):
             point = series[idx]
-            return (f"Date: {label}\n"
+            prefix = "Hour" if is_hourly else "Date"
+            return (f"{prefix}: {label}\n"
                     f"Sales: {money(point['revenue'])}\n"
                     f"Orders: {point['orders']}")
 
@@ -896,16 +941,25 @@ class ReportsView(QWidget):
         for row, p in enumerate(page_rows):
             table.setItem(row, 0, QTableWidgetItem(p["name"]))
             table.setItem(row, 1, QTableWidgetItem(f"{p['qty']} sold"))
+            cost_item = QTableWidgetItem(money(p.get("cost", 0.0)))
+            cost_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            table.setItem(row, 2, cost_item)
             revenue_item = QTableWidgetItem(money(p["revenue"]))
             revenue_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            table.setItem(row, 2, revenue_item)
+            table.setItem(row, 3, revenue_item)
             profit_item = QTableWidgetItem(money(p["profit"]))
             profit_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             profit_item.setForeground(QColor(SUCCESS if p["profit"] >= 0 else DANGER))
-            table.setItem(row, 3, profit_item)
+            table.setItem(row, 4, profit_item)
             margin_item = QTableWidgetItem(f"{p['margin']:.1f}%")
             margin_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            table.setItem(row, 4, margin_item)
+            table.setItem(row, 5, margin_item)
+            if p["profit"] > 0:
+                self._set_badge_cell(table, row, 6, "Profit", "success")
+            elif p["profit"] < 0:
+                self._set_badge_cell(table, row, 6, "Loss", "danger")
+            else:
+                self._set_badge_cell(table, row, 6, "Break-even", "muted")
 
         total_pages = max(1, (len(rows) - 1) // SMALL_PAGE_SIZE + 1)
         self.top_products_page_label.setText(

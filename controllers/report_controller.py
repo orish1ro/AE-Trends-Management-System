@@ -29,6 +29,12 @@ def _daterange(start_str, end_str):
     return days
 
 
+def _hour_label(hour):
+    period = "AM" if hour < 12 else "PM"
+    display_hour = hour % 12 or 12
+    return f"{display_hour} {period}"
+
+
 class ReportController:
     def __init__(self, db, report_view, dashboard_view):
         self.db = db
@@ -38,6 +44,8 @@ class ReportController:
         self.current_rows = []
         self._pl_daily = []
         self._pl_granularity = "Daily"
+        self._last_from = None
+        self._last_to = None
 
         self.report_view.filters_changed.connect(self.load_reports)
         self.report_view.export_requested.connect(self.export_report)
@@ -229,6 +237,7 @@ class ReportController:
                 "name": product_names.get(product_id, f"Product #{product_id}"),
                 "qty": qty,
                 "revenue": revenue,
+                "cost": cost,
                 "profit": profit,
                 "margin": margin,
             })
@@ -246,6 +255,13 @@ class ReportController:
             "inventory_spend": inventory_spend,
             "gross_profit": gross_profit,
             "gross_margin": gross_margin,
+            # Cash-based check, separate from Gross Profit (which is matched
+            # to units actually sold): did the cash spent restocking during
+            # this period actually come back through sales in the same
+            # period? Negative means money is still tied up in stock that
+            # hasn't sold yet -- not necessarily "losing", but not "returned"
+            # either.
+            "net_profit": total_sales - inventory_spend,
         }
 
         # --- daily P&L / sales trend series across the whole selected range ---
@@ -268,7 +284,24 @@ class ReportController:
             })
 
         self._pl_daily = daily_series
-        pl_series = self._bucket_series(daily_series, self._pl_granularity)
+        self._last_from, self._last_to = from_date, to_date
+        # A single-day filter (Today/Yesterday/a custom one-day range) means
+        # daily_series above has exactly one point, which reads as an empty
+        # chart. Show an hourly breakdown for that one day instead -- much
+        # more useful, and the data actually has real timestamps to support it.
+        chart_series = self._compute_hourly_series(from_date) if from_date == to_date else daily_series
+        self._pl_daily = chart_series
+        # "Daily" always mirrors the current KPI filter above; Weekly/Monthly
+        # pull their own wider lookback window (see change_pl_granularity)
+        # so switching to them still shows a real trend even when the
+        # filter above is something narrow like "Today".
+        if self._pl_granularity == "Daily":
+            pl_series = chart_series
+        else:
+            pl_series = self._bucket_series(
+                self._compute_daily_series(*self._pl_lookback_range(self._pl_granularity, to_date)),
+                self._pl_granularity,
+            )
         avg_order_value = (total_sales / len(rows)) if rows else 0.0
 
         self.current_rows = rows
@@ -278,7 +311,7 @@ class ReportController:
             "kpis": kpis,
             "pl_series": pl_series,
             "pl_granularity": self._pl_granularity,
-            "sales_series": daily_series,
+            "sales_series": chart_series,
             "sales_stats": {"orders": len(rows), "avg_order_value": avg_order_value},
             "order_status": order_status_counts,
             "top_products": top_products,
@@ -365,11 +398,136 @@ class ReportController:
             result.append(b)
         return result
 
+    # Weekly/Monthly need enough history to actually show a trend, so they
+    # look back a fixed window ending at the filter's "To" date rather than
+    # reusing whatever (possibly single-day) range the KPI filter has set.
+    _PL_LOOKBACK_DAYS = {"Weekly": 7 * 12, "Monthly": 30 * 12}
+
+    def _pl_lookback_range(self, granularity, to_date=None):
+        to_date = to_date or self._last_to or datetime.now().strftime("%Y-%m-%d")
+        lookback = self._PL_LOOKBACK_DAYS[granularity]
+        from_date = (datetime.strptime(to_date, "%Y-%m-%d") - timedelta(days=lookback - 1)).strftime("%Y-%m-%d")
+        return from_date, to_date
+
+    def _compute_daily_series(self, from_date, to_date):
+        """Revenue/COGS/order-count per day for an arbitrary range, computed
+        independently of the currently-applied KPI date filter. Used to give
+        the Weekly/Monthly P&L views their own lookback window."""
+        with self.db.get_connection() as conn:
+            detail_rows = conn.execute(
+                """
+                SELECT od.ProductID, od.Quantity, od.Subtotal, date(o.OrderDate) AS OrderDay
+                FROM OrderDetails od
+                JOIN Orders o ON o.OrderID = od.OrderID
+                WHERE date(o.OrderDate) BETWEEN date(?) AND date(?)
+                """,
+                (from_date, to_date),
+            ).fetchall()
+            cost_rows = conn.execute(
+                """
+                SELECT ProductID, SUM(Quantity * UnitCost) * 1.0 / SUM(Quantity) AS AvgCost
+                FROM PurchaseOrderDetails
+                GROUP BY ProductID
+                """
+            ).fetchall()
+            order_rows = conn.execute(
+                """
+                SELECT OrderID, date(OrderDate) AS OrderDay
+                FROM Orders
+                WHERE date(OrderDate) BETWEEN date(?) AND date(?)
+                """,
+                (from_date, to_date),
+            ).fetchall()
+
+        cost_by_product = {row["ProductID"]: row["AvgCost"] or 0.0 for row in cost_rows}
+        revenue_by_day, cost_by_day, order_count_by_day = {}, {}, {}
+        for d in detail_rows:
+            unit_cost = cost_by_product.get(d["ProductID"], 0.0)
+            revenue_by_day[d["OrderDay"]] = revenue_by_day.get(d["OrderDay"], 0.0) + (d["Subtotal"] or 0.0)
+            cost_by_day[d["OrderDay"]] = cost_by_day.get(d["OrderDay"], 0.0) + unit_cost * d["Quantity"]
+        for row in order_rows:
+            order_count_by_day[row["OrderDay"]] = order_count_by_day.get(row["OrderDay"], 0) + 1
+
+        daily_series = []
+        for day in _daterange(from_date, to_date):
+            key = day.strftime("%Y-%m-%d")
+            revenue = revenue_by_day.get(key, 0.0)
+            cost = cost_by_day.get(key, 0.0)
+            daily_series.append({
+                "date": key,
+                "label": day.strftime("%b %d"),
+                "revenue": revenue,
+                "cogs": cost,
+                "gross_profit": revenue - cost,
+                "orders": order_count_by_day.get(key, 0),
+            })
+        return daily_series
+
+    def _compute_hourly_series(self, day_str):
+        """Same idea as _compute_daily_series, but bucketed by hour-of-day
+        for one specific date. Used when the selected range is a single
+        day, since a 1-point-per-day chart has nothing to show for a
+        single-day filter (see paint bug fix in report_charts.py) -- an
+        hourly breakdown is the useful thing to show instead."""
+        with self.db.get_connection() as conn:
+            detail_rows = conn.execute(
+                """
+                SELECT od.ProductID, od.Quantity, od.Subtotal,
+                       CAST(strftime('%H', o.OrderDate) AS INTEGER) AS Hour
+                FROM OrderDetails od
+                JOIN Orders o ON o.OrderID = od.OrderID
+                WHERE date(o.OrderDate) = date(?)
+                """,
+                (day_str,),
+            ).fetchall()
+            cost_rows = conn.execute(
+                """
+                SELECT ProductID, SUM(Quantity * UnitCost) * 1.0 / SUM(Quantity) AS AvgCost
+                FROM PurchaseOrderDetails
+                GROUP BY ProductID
+                """
+            ).fetchall()
+            order_rows = conn.execute(
+                """
+                SELECT OrderID, CAST(strftime('%H', OrderDate) AS INTEGER) AS Hour
+                FROM Orders
+                WHERE date(OrderDate) = date(?)
+                """,
+                (day_str,),
+            ).fetchall()
+
+        cost_by_product = {row["ProductID"]: row["AvgCost"] or 0.0 for row in cost_rows}
+        revenue_by_hour, cost_by_hour, orders_by_hour = {}, {}, {}
+        for d in detail_rows:
+            unit_cost = cost_by_product.get(d["ProductID"], 0.0)
+            revenue_by_hour[d["Hour"]] = revenue_by_hour.get(d["Hour"], 0.0) + (d["Subtotal"] or 0.0)
+            cost_by_hour[d["Hour"]] = cost_by_hour.get(d["Hour"], 0.0) + unit_cost * d["Quantity"]
+        for row in order_rows:
+            orders_by_hour[row["Hour"]] = orders_by_hour.get(row["Hour"], 0) + 1
+
+        series = []
+        for hour in range(24):
+            revenue = revenue_by_hour.get(hour, 0.0)
+            cost = cost_by_hour.get(hour, 0.0)
+            series.append({
+                "date": f"{day_str}T{hour:02d}",
+                "label": _hour_label(hour),
+                "revenue": revenue,
+                "cogs": cost,
+                "gross_profit": revenue - cost,
+                "orders": orders_by_hour.get(hour, 0),
+            })
+        return series
+
     def change_pl_granularity(self, granularity):
         self._pl_granularity = granularity
-        if not self._pl_daily:
+        if granularity == "Daily":
+            if self._pl_daily:
+                self.report_view.update_pl_chart(self._pl_daily, granularity)
             return
-        self.report_view.update_pl_chart(self._bucket_series(self._pl_daily, granularity), granularity)
+        from_date, to_date = self._pl_lookback_range(granularity)
+        series = self._compute_daily_series(from_date, to_date)
+        self.report_view.update_pl_chart(self._bucket_series(series, granularity), granularity)
 
     # ------------------------------------------------------------------ #
     def load_dashboard_range(self, preset):

@@ -68,8 +68,8 @@ class TransactionModel:
         elif filter_type == "Walk-in Registers":
             query += " AND pl.PlatformName = 'Walk-in'"
         if search_name:
-            query += " AND c.FullName LIKE ?"
-            params.append(f"%{search_name}%")
+            query += " AND (c.FullName LIKE ? OR ('ORD-' || printf('%04d', o.OrderID)) LIKE ?)"
+            params.extend([f"%{search_name}%", f"%{search_name}%"])
             
         # Group by OrderID to prevent duplicate rows, then order by date
         query += " GROUP BY o.OrderID ORDER BY o.OrderID DESC"
@@ -92,9 +92,7 @@ class TransactionModel:
         ]
 
     def get_recent_orders(self, limit=6):
-        """Most recent orders of ANY status - used by the Dashboard's Recent
-        Transactions panel. Deliberately separate from get_all_orders(), which
-        hides Completed/Cancelled/Refunded orders for the active-order queue."""
+        """Most recent orders of ANY status - used by the Dashboard's Recent Transactions panel."""
         query = """
             SELECT o.OrderID, o.OrderDate, o.TotalAmount, o.OrderStatus,
                    c.FullName AS CustomerName, pm.PaymentMethod,
@@ -153,29 +151,43 @@ class TransactionModel:
         return True
 
     def _find_or_create_customer(self, conn, name, phone, address):
+        display_name = name.strip() if name and name.strip() else "Walk-in Customer"
         if phone:
             row = conn.execute(
                 "SELECT CustomerID FROM Customer WHERE ContactNumber = ?", (phone,)
             ).fetchone()
             if row:
-                return row["CustomerID"]
+                customer_id = row["CustomerID"]
+                # BUG FIX: previously this just returned the existing customer
+                # as-is, so whatever name/address were entered the very first
+                # time this phone number was used stuck around forever - later
+                # orders using the same phone number would silently keep
+                # showing that old name no matter what was typed this time.
+                # Only overwrite when a real name was actually typed now, so
+                # a walk-in re-order with a blank name field doesn't wipe out
+                # a previously saved real name.
+                if name and name.strip():
+                    conn.execute(
+                        "UPDATE Customer SET FullName = ?, Address = ? WHERE CustomerID = ?",
+                        (display_name, address or None, customer_id),
+                    )
+                return customer_id
         cur = conn.execute(
             "INSERT INTO Customer (FullName, ContactNumber, Address) VALUES (?, ?, ?)",
-            (name, phone or None, address or None),
+            (display_name, phone or None, address or None),
         )
         return cur.lastrowid
 
     def _platform_id_for(self, conn, order_type):
-        if order_type == "Walk-in":
-            row = conn.execute(
-                "SELECT PlatformID FROM Platform WHERE PlatformName = 'Walk-in'"
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT PlatformID FROM Platform WHERE PlatformName != 'Walk-in' "
-                "ORDER BY PlatformID LIMIT 1"
-            ).fetchone()
-        return row["PlatformID"] if row else 1
+        row = conn.execute(
+            "SELECT PlatformID FROM Platform WHERE PlatformName = ?", (order_type,)
+        ).fetchone()
+        if row:
+            return row["PlatformID"]
+        cur = conn.execute(
+            "INSERT INTO Platform (PlatformName) VALUES (?)", (order_type,)
+        )
+        return cur.lastrowid
 
     def create_order(self, customer_name, customer_phone, address, order_type,
                       total, payment_method, cart_items, amount_paid=None,
@@ -184,17 +196,10 @@ class TransactionModel:
             customer_id = self._find_or_create_customer(conn, customer_name,
                                                         customer_phone, address)
             platform_id = self._platform_id_for(conn, order_type)
-            initial_status = "Paid" if order_type == "Walk-in" else "Pending"
+            
+            # Flow enforcement: Send all new transactions to Order Status first
+            initial_status = "Pending" 
 
-            # Store OrderDate using LOCAL time explicitly. Relying on SQLite's
-            # column default (datetime('now')) is wrong here -- that function
-            # returns UTC time, while the dashboard's date filters (and the
-            # rest of the app) work in local time. Left as the default, any
-            # sale recorded between local midnight and ~8AM (UTC+8) gets
-            # stamped with the *previous* UTC day, so it silently drops out
-            # of "Today" on the Sales Performance chart even though the
-            # Today's Sales KPI (which also compares against UTC "now")
-            # still counts it. Passing local time here keeps both consistent.
             order_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cur = conn.execute(
                 """INSERT INTO Orders (CustomerID, StaffID, PlatformID, TotalAmount,
@@ -265,6 +270,7 @@ class TransactionModel:
                 "stats": dict(stats) if stats else {},
                 "history": [dict(row) for row in items]
             }
+            
     def get_order_detail(self, order_code):
         """Fetches complete professional details for a specific order."""
         try:

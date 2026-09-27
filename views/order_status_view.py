@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
                              QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, 
-                             QButtonGroup, QDialog, QComboBox, QScrollArea)
+                             QButtonGroup, QDialog, QComboBox, QScrollArea, QMessageBox)
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
@@ -27,7 +27,8 @@ class OrderStatusView(QWidget):
     filter_changed = pyqtSignal()
     status_changed = pyqtSignal(str, str) # order_code, new_status
     view_requested = pyqtSignal(str)      # order_code
-    confirm_requested = pyqtSignal(str)   # move order to history
+    confirm_requested = pyqtSignal(str)   # move order to history as Completed
+    cancel_requested = pyqtSignal(str)    # move order to history as Cancelled
 
     def __init__(self):
         super().__init__()
@@ -133,24 +134,32 @@ class OrderStatusView(QWidget):
             
             # Interactive Dropdown 
             combo = QComboBox()
-            combo.addItems(["Pending", "Paid", "Prepared", "Shipped"])
+            combo.addItems(["Pending", "Paid", "Prepared", "Shipped", "Cancelled"])
             combo.setCurrentText(ord_item['status'])
             combo.setStyleSheet("""
                 QComboBox { combobox-popup: 0; padding: 4px; border: 1px solid #D9D2C2; border-radius: 4px; background: white; color: #2A2421;}
                 QComboBox::drop-down { border: none; width: 20px; }
                 QComboBox QAbstractItemView { background-color: white; border: 1px solid #D9D2C2; selection-background-color: #F3E7C2; selection-color: #2A2421; outline: none; }
             """)
-            combo.currentTextChanged.connect(lambda text, oc=order_code: self.status_changed.emit(oc, text))
             self.table.setCellWidget(row, 6, combo)
 
-            # Action Button
-            btn = QPushButton("Confirm Transaction" if ord_item['status'] != "Completed" else "View")
+            # Action Button - this is the single point that actually saves
+            # anything. Picking "Cancelled" in the dropdown only stages it
+            # locally (it flips this button to a red "Confirm Cancellation");
+            # nothing is written to the database until this button is
+            # clicked. Picking any of the in-progress statuses still saves
+            # immediately, same as before, since those aren't destructive.
+            is_in_progress = ord_item['status'] in ("Pending", "Paid", "Prepared", "Shipped")
+            btn = QPushButton("Confirm Transaction" if is_in_progress else "View")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet("""
-                QPushButton { color: #FFFFFF; background-color: #C09E3B; border: none; border-radius: 4px; padding: 6px 12px; font-weight: bold; }
-                QPushButton:hover { background-color: #B18F2E; }
-            """)
-            btn.clicked.connect(lambda checked, oc=order_code: self.confirm_requested.emit(oc) if ord_item['status'] != 'Completed' else self.view_requested.emit(oc))
+            self._style_action_button(btn, is_cancel_style=False)
+
+            combo.currentTextChanged.connect(
+                lambda text, oc=order_code, cb=combo, b=btn: self._on_status_choice(oc, text, cb, b)
+            )
+            btn.clicked.connect(
+                lambda checked, oc=order_code, cb=combo, ip=is_in_progress: self._on_action_clicked(oc, cb, ip)
+            )
             
             btn_container = QWidget()
             btn_layout = QHBoxLayout(btn_container)
@@ -158,6 +167,54 @@ class OrderStatusView(QWidget):
             btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             btn_layout.addWidget(btn)
             self.table.setCellWidget(row, 7, btn_container)
+
+    def _style_action_button(self, btn, is_cancel_style):
+        if is_cancel_style:
+            btn.setStyleSheet("""
+                QPushButton { color: #FFFFFF; background-color: #A31E1E; border: none; border-radius: 4px; padding: 6px 12px; font-weight: bold; }
+                QPushButton:hover { background-color: #8B1919; }
+            """)
+        else:
+            btn.setStyleSheet("""
+                QPushButton { color: #FFFFFF; background-color: #C09E3B; border: none; border-radius: 4px; padding: 6px 12px; font-weight: bold; }
+                QPushButton:hover { background-color: #B18F2E; }
+            """)
+
+    def _on_status_choice(self, order_code, new_text, combo, btn):
+        """Fires whenever the dropdown value changes. Cancelled is staged
+        only (button turns into Confirm Cancellation, nothing saved yet).
+        Any other value still saves immediately, like before."""
+        if new_text == "Cancelled":
+            btn.setText("Confirm Cancellation")
+            self._style_action_button(btn, is_cancel_style=True)
+        else:
+            btn.setText("Confirm Transaction")
+            self._style_action_button(btn, is_cancel_style=False)
+            self.status_changed.emit(order_code, new_text)
+
+    def _on_action_clicked(self, order_code, combo, was_in_progress):
+        """The single save point. Reads whatever is currently staged in the
+        dropdown and asks for a final confirmation before committing."""
+        current = combo.currentText()
+
+        if current == "Cancelled":
+            reply = QMessageBox.question(
+                self,
+                "Confirm Cancellation",
+                f"Are you sure you want to cancel order {order_code}?\n\n"
+                "This cannot be undone - the order will move to "
+                "Transaction History as Cancelled.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.cancel_requested.emit(order_code)
+            return
+
+        if was_in_progress:
+            self.confirm_requested.emit(order_code)
+        else:
+            self.view_requested.emit(order_code)
 
 
 class OrderDetailDialog(QDialog):

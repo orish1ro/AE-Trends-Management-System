@@ -141,7 +141,7 @@ class TransactionHistoryView(QWidget):
         self.setStyleSheet("background-color: #F7F3EB;")
         self.current_tab = "All Transactions"
 
-        # FIX: Create a master layout to hold a full-page scroll area
+        # Create a master layout to hold a full-page scroll area
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -242,7 +242,7 @@ class TransactionHistoryView(QWidget):
         filt_row.setSpacing(10)
 
         self.date_from = ArrowDateEdit(calendarPopup=True)
-        self.date_from.setDate(QDate.currentDate().addMonths(-1))
+        self.date_from.setDate(QDate.currentDate().addYears(-1))
         self.date_to = ArrowDateEdit(calendarPopup=True)
         self.date_to.setDate(QDate.currentDate())
 
@@ -385,7 +385,7 @@ class TransactionHistoryView(QWidget):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
 
-        # FIX: Raised to 500 to guarantee it fits 10 rows + 40px Header + Borders safely
+        # Raised to 500 to guarantee it fits 10 rows + 40px Header + Borders safely
         self.table.setFixedHeight(500)
 
         self.table.setStyleSheet("""
@@ -397,9 +397,10 @@ class TransactionHistoryView(QWidget):
                 background: #F3EEE3;
                 color: #6B6258;
                 font-weight: bold;
+                font-size: 11px;
                 border: none;
                 border-bottom: 1px solid #E5E0D5;
-                padding: 10px 8px;
+                padding: 10px 6px;
             }
             QTableWidget::item {
                 border-bottom: 1px solid #F0EAE1;
@@ -507,7 +508,7 @@ class TransactionHistoryView(QWidget):
         outer.addWidget(self.table_card)
         outer.addStretch()
         
-        # FIX: Complete the ScrollArea wrapping process
+        # Complete the ScrollArea wrapping process
         self.page_scroll.setWidget(self.content_widget)
         main_layout.addWidget(self.page_scroll)
 
@@ -571,6 +572,8 @@ class TransactionHistoryView(QWidget):
     # ==============================================================
 
     def populate_filter_options(self, options):
+        self._raw_options = options
+
         def fill(combo, values, all_label):
             combo.blockSignals(True)
             combo.clear()
@@ -578,21 +581,15 @@ class TransactionHistoryView(QWidget):
             combo.addItems(values)
             combo.blockSignals(False)
 
-        fill(
-            self.status_filter,
-            sorted(
-                set(
-                    options["order_statuses"] +
-                    options["po_statuses"]
-                )
-            ),
-            "All Statuses",
-        )
+        # Automatically apply the correct statuses for the current tab on startup
+        self._apply_tab_columns(self.current_tab)
+
         fill(
             self.platform_filter,
             options["platforms"],
             "All Platforms",
         )
+        
         fill(
             self.payment_filter,
             options["payment_methods"],
@@ -615,7 +612,7 @@ class TransactionHistoryView(QWidget):
         self.staff_filter.setCurrentIndex(0)
 
         self.date_from.setDate(
-            QDate.currentDate().addYears(-5)
+            QDate.currentDate().addYears(-1)
         )
         self.date_to.setDate(QDate.currentDate())
 
@@ -675,7 +672,7 @@ class TransactionHistoryView(QWidget):
 
         else:
             headers = [
-                "ID", "TYPE", "PARTY", "DATE", "PROCESSED BY",
+                "ID", "TYPE", "CUSTOMER/SUPPLIER", "DATE", "PROCESSED BY",
                 "QTY", "TOTAL", "STATUS", ""
             ]
             self.platform_filter.setVisible(True)
@@ -698,6 +695,20 @@ class TransactionHistoryView(QWidget):
             len(headers) - 1,
             80
         )
+
+        if hasattr(self, '_raw_options'):
+            self.status_filter.blockSignals(True)
+            self.status_filter.clear()
+            self.status_filter.addItem("All Statuses")
+            
+            if tab == "Customer Orders":
+                self.status_filter.addItems(sorted(set(self._raw_options["order_statuses"])))
+            elif tab == "Inventory Purchases":
+                self.status_filter.addItems(sorted(set(self._raw_options["po_statuses"])))
+            else:
+                self.status_filter.addItems(sorted(set(self._raw_options["order_statuses"])))
+                
+            self.status_filter.blockSignals(False)
 
     # ==============================================================
     # VIEW BUTTON

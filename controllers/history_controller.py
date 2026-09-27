@@ -28,9 +28,22 @@ class HistoryController:
             search=f["search"], date_from=f["date_from"], date_to=f["date_to"],
             status=f["status"], platform=f["platform"],
             payment_method=f["payment_method"], staff=f["staff"])
-        purchases = self.model.get_inventory_purchases(
-            search=f["search"], date_from=f["date_from"], date_to=f["date_to"],
-            status=f["status"], staff=f["staff"])
+
+        # Purchase Orders don't have a Platform or Payment Method of their own -
+        # they're supplier restocks, not customer sales. So once either filter
+        # is narrowed to something specific, no PO can ever legitimately match
+        # it; leave the purchases list empty instead of showing every PO
+        # regardless of what Platform/Payment Method is selected (this was the
+        # bug: Facebook Live and TikTok Live both showed the same PO rows,
+        # since nothing was actually filtering them).
+        platform_is_narrowed = f["platform"] and f["platform"] != "All Platforms"
+        payment_is_narrowed = f["payment_method"] and f["payment_method"] != "All Payment Methods"
+        if platform_is_narrowed or payment_is_narrowed:
+            purchases = []
+        else:
+            purchases = self.model.get_inventory_purchases(
+                search=f["search"], date_from=f["date_from"], date_to=f["date_to"],
+                status=f["status"], staff=f["staff"])
 
         if tab == "Customer Orders":
             rows = orders

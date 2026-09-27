@@ -88,6 +88,14 @@ class LineAreaChart(QWidget):
         n = len(self.labels)
         step_x = plot_rect.width() / max(n - 1, 1)
 
+        def x_for(i):
+            # A single point has nowhere to "step" to, so pinning it at
+            # left + step_x*0 puts it right on the left edge -- looks like
+            # the chart is empty. Center it instead when there's only one.
+            if n == 1:
+                return plot_rect.left() + plot_rect.width() / 2
+            return plot_rect.left() + step_x * i
+
         # Gridlines + y-axis labels
         grid_lines = 4
         for i in range(grid_lines + 1):
@@ -108,7 +116,7 @@ class LineAreaChart(QWidget):
         for i, label in enumerate(self.labels):
             if i % label_step != 0 and i != n - 1:
                 continue
-            x = plot_rect.left() + step_x * i
+            x = x_for(i)
             painter.drawText(QRectF(x - 32, plot_rect.bottom() + 6, 64, 16),
                               Qt.AlignmentFlag.AlignCenter, label)
 
@@ -119,7 +127,7 @@ class LineAreaChart(QWidget):
                 continue
             color = QColor(s["color"])
             points = [
-                QPointF(plot_rect.left() + step_x * i,
+                QPointF(x_for(i),
                         plot_rect.bottom() - (v / max_val) * plot_rect.height())
                 for i, v in enumerate(values)
             ]
@@ -149,12 +157,13 @@ class LineAreaChart(QWidget):
             if len(points) <= 45:
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(color))
+                radius = 4.5 if n == 1 else 2.6
                 for p in points:
-                    painter.drawEllipse(p, 2.6, 2.6)
+                    painter.drawEllipse(p, radius, radius)
 
         # Hover crosshair
         if self._hover_index is not None and 0 <= self._hover_index < n:
-            x = plot_rect.left() + step_x * self._hover_index
+            x = x_for(self._hover_index)
             painter.setPen(QPen(QColor(GOLD), 1, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(x, plot_rect.top()), QPointF(x, plot_rect.bottom()))
 
@@ -178,6 +187,8 @@ class LineAreaChart(QWidget):
         if not self.labels:
             return None
         n = len(self.labels)
+        if n == 1:
+            return 0
         step_x = self._plot_rect.width() / max(n - 1, 1)
         if step_x <= 0:
             return 0

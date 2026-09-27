@@ -485,7 +485,7 @@ class RankedListPanel(QFrame):
         super().__init__()
         self.setObjectName("rankedPanel")
         
-        # FIX: Force these cards to always be 280px tall so they never stretch or shrink
+        # FIX: Force these cards to always be 250px tall so they never stretch or shrink
         self.setFixedHeight(250)
         
         self.setStyleSheet(f"""
@@ -641,11 +641,11 @@ class DashboardView(QWidget):
         meta_row.setSpacing(18)
 
         today_str = QDate.currentDate().toString("dddd, MMMM d, yyyy")
-        self.date_lbl = QLabel(f"📅  {today_str}")
+        self.date_lbl = QLabel(f"  {today_str}")
         self.date_lbl.setStyleSheet(f"font-size: 12px; color: {INK}; font-weight: 600; {LABEL_RESET}")
-        self.branch_lbl = QLabel("🏬  Main Branch")
+        self.branch_lbl = QLabel("  Main Branch")
         self.branch_lbl.setStyleSheet(f"font-size: 12px; color: {INK}; font-weight: 600; {LABEL_RESET}")
-        self.sync_lbl = QLabel("🔄  Synced just now")
+        self.sync_lbl = QLabel("  Synced just now")
         self.sync_lbl.setStyleSheet(f"font-size: 12px; color: {MUTED}; {LABEL_RESET}")
 
         meta_row.addWidget(self.date_lbl)

@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS Orders (
     OrderDate        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     TotalAmount      REAL NOT NULL DEFAULT 0 CHECK (TotalAmount >= 0),
     OrderStatus      TEXT NOT NULL DEFAULT 'Pending'
-                     CHECK (OrderStatus IN ('Pending','Paid','Prepared','Shipped','Completed','Refunded')),
+                     CHECK (OrderStatus IN ('Pending','Paid','Prepared','Shipped','Completed','Refunded','Cancelled')),
     DeliveryAddress  TEXT,
     FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID),
     FOREIGN KEY (StaffID)    REFERENCES Staff(StaffID),
