@@ -43,8 +43,9 @@ class TransactionModel:
             cursor.execute(query, (f"%{search_query}%",))
             return cursor.fetchall()
 
-    def get_all_orders(self, filter_type="All Orders", search_name=""):
-        # Filters OUT 'Completed', 'Cancelled', and 'Refunded' to keep the queue clean
+    def get_all_orders(self, filter_type="All Orders", search_name="", status_filter="Pending"):
+        # status_filter "Pending" = active queue (Pending/Paid/Prepared/Shipped).
+        # status_filter "Completed" = orders already marked Completed.
         query = """
             SELECT o.OrderID, o.OrderDate, o.TotalAmount, o.OrderStatus,
                    c.FullName AS CustomerName, pl.PlatformName, pm.PaymentMethod,
@@ -55,13 +56,11 @@ class TransactionModel:
             LEFT JOIN Payment pm ON pm.OrderID = o.OrderID
             LEFT JOIN OrderDetails od ON o.OrderID = od.OrderID
             LEFT JOIN Product pr ON od.ProductID = pr.ProductID
-            WHERE o.OrderStatus IN (
-            'Pending',
-            'Paid',
-            'Prepared',
-            'Shipped'
-           )
-        """
+            WHERE o.OrderStatus IN ({statuses})
+        """.format(
+            statuses="'Completed'" if status_filter == "Completed"
+            else "'Pending', 'Paid', 'Prepared', 'Shipped'"
+        )
         params = []
         if filter_type == "Online Shipments":
             query += " AND pl.PlatformName != 'Walk-in'"

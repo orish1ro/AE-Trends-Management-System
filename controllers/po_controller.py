@@ -1,4 +1,5 @@
 from PyQt6.QtWidgets import QMessageBox
+from views.supplier_dialog import SupplierManagerDialog
 
 class POController:
     def __init__(self, model, view, on_po_saved=None, inv_model=None):
@@ -19,9 +20,60 @@ class POController:
         # what's currently in stock instead of a fixed placeholder list.
         self.view.panel_open_requested.connect(self.refresh_available_products)
 
+        # Supplier CRUD
+        self.view.manage_suppliers_requested.connect(self.open_supplier_manager)
+        self.view.quick_add_supplier_requested.connect(self.handle_quick_add_supplier)
+
     def refresh_available_products(self):
         if self.inv_model:
             self.view.set_available_products(self.inv_model.get_all_products())
+
+    def refresh_suppliers(self):
+        suppliers = self.model.get_all_suppliers()
+        self.view.set_supplier_list(suppliers)
+        return suppliers
+
+    def handle_quick_add_supplier(self, name, location, contact):
+        """Called from the inline 'Add Supplier' mini-card on the New PO panel."""
+        try:
+            self.model.add_supplier(name, location, contact)
+            self.refresh_suppliers()
+        except Exception as e:
+            QMessageBox.critical(self.view, "Database Error", f"Could not save supplier:\n{str(e)}")
+
+    def open_supplier_manager(self):
+        suppliers = self.model.get_all_suppliers()
+
+        def on_add(name, location, contact):
+            try:
+                self.model.add_supplier(name, location, contact)
+                dialog.set_suppliers(self.model.get_all_suppliers())
+                self.refresh_suppliers()
+            except Exception as e:
+                QMessageBox.critical(dialog, "Database Error", f"Could not save supplier:\n{str(e)}")
+
+        def on_update(supplier_id, name, location, contact):
+            try:
+                self.model.update_supplier(supplier_id, name, location, contact)
+                dialog.set_suppliers(self.model.get_all_suppliers())
+                self.refresh_suppliers()
+                self.load_po_history()  # supplier name may have changed on existing POs
+            except Exception as e:
+                QMessageBox.critical(dialog, "Database Error", f"Could not update supplier:\n{str(e)}")
+
+        def on_delete(supplier_id):
+            try:
+                success, reason = self.model.delete_supplier(supplier_id)
+                if success:
+                    dialog.set_suppliers(self.model.get_all_suppliers())
+                    self.refresh_suppliers()
+                else:
+                    QMessageBox.warning(dialog, "Can't Delete Supplier", reason)
+            except Exception as e:
+                QMessageBox.critical(dialog, "Database Error", f"Could not delete supplier:\n{str(e)}")
+
+        dialog = SupplierManagerDialog(self.view, suppliers, on_add, on_update, on_delete)
+        dialog.exec()
 
     def load_po_history(self):
         pos = self.model.get_all_po()

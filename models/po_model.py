@@ -126,6 +126,77 @@ class POModel:
         )
         return cur.lastrowid
 
+    # ------------------------------------------------------------------
+    # Supplier CRUD - used by the Manage Suppliers dialog on the
+    # Purchase Orders page.
+    # ------------------------------------------------------------------
+    def get_all_suppliers(self):
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT SupplierID, SupplierName, Location, ContactNumber "
+                "FROM Supplier ORDER BY SupplierName"
+            ).fetchall()
+        return [
+            {
+                "id": r["SupplierID"],
+                "name": r["SupplierName"],
+                "location": r["Location"] or "",
+                "contact": r["ContactNumber"] or "",
+            }
+            for r in rows
+        ]
+
+    def add_supplier(self, name, location="", contact=""):
+        """Creates a new supplier. If a supplier with this exact name
+        already exists, updates its details instead of creating a
+        duplicate (same de-dup behavior the PO form already relies on)."""
+        with self.db.get_connection() as conn:
+            existing = conn.execute(
+                "SELECT SupplierID FROM Supplier WHERE SupplierName = ?", (name,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE Supplier SET Location = ?, ContactNumber = ? WHERE SupplierID = ?",
+                    (location, contact, existing["SupplierID"]),
+                )
+                conn.commit()
+                return existing["SupplierID"]
+            cur = conn.execute(
+                "INSERT INTO Supplier (SupplierName, Location, ContactNumber) VALUES (?, ?, ?)",
+                (name, location, contact),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def update_supplier(self, supplier_id, name, location="", contact=""):
+        with self.db.get_connection() as conn:
+            conn.execute(
+                "UPDATE Supplier SET SupplierName = ?, Location = ?, ContactNumber = ? "
+                "WHERE SupplierID = ?",
+                (name, location, contact, supplier_id),
+            )
+            conn.commit()
+
+    def delete_supplier(self, supplier_id):
+        """Returns (True, None) on success, or (False, reason) if the
+        supplier is still referenced by purchase orders or products and
+        can't be safely removed."""
+        with self.db.get_connection() as conn:
+            po_count = conn.execute(
+                "SELECT COUNT(*) c FROM PurchaseOrder WHERE SupplierID = ?", (supplier_id,)
+            ).fetchone()["c"]
+            prod_count = conn.execute(
+                "SELECT COUNT(*) c FROM Product WHERE SupplierID = ?", (supplier_id,)
+            ).fetchone()["c"]
+            if po_count > 0 or prod_count > 0:
+                return False, (
+                    f"This supplier is linked to {po_count} purchase order(s) and "
+                    f"{prod_count} product(s), so it can't be deleted."
+                )
+            conn.execute("DELETE FROM Supplier WHERE SupplierID = ?", (supplier_id,))
+            conn.commit()
+            return True, None
+
     def _get_or_create_product(self, conn, product_name, unit_cost):
         row = conn.execute(
             "SELECT ProductID FROM Product WHERE ProductName = ?", (product_name,)

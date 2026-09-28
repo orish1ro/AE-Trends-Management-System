@@ -35,7 +35,7 @@ class AuthController:
             self.init_app_controllers(user)
             self.login_view.hide()
             self.main_window.set_user(user['full_name'], user['role'])
-            self.main_window.show()
+            self.main_window.showMaximized()
         else:
             QMessageBox.warning(self.login_view, "Login Failed", "Invalid username or password.")
 
@@ -90,6 +90,7 @@ class AuthController:
         self.txn_ctrl.load_orders()
         self.po_ctrl.load_po_history()
         self.po_ctrl.refresh_available_products()
+        self.po_ctrl.refresh_suppliers()
 
         self.rep_ctrl.load_reports()
         self.hist_ctrl.load()

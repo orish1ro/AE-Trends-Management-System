@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QPushButton, QFrame, QTableWidget, QTableWidgetItem, QHeaderView,
-    QDialog, QMessageBox, QScrollArea, QMenu, QSizePolicy
+    QDialog, QMessageBox, QScrollArea, QMenu, QSizePolicy, QButtonGroup
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from datetime import datetime
@@ -110,6 +110,8 @@ class PurchaseOrdersView(QWidget):
     mark_received_requested = pyqtSignal(str)
     submit_order_requested = pyqtSignal(dict)
     panel_open_requested = pyqtSignal()
+    manage_suppliers_requested = pyqtSignal()
+    quick_add_supplier_requested = pyqtSignal(str, str, str)  # name, location, contact
 
     def __init__(self):
         super().__init__()
@@ -185,10 +187,21 @@ class PurchaseOrdersView(QWidget):
         search_layout.addWidget(search_icon)
         search_layout.addWidget(self.search_input)
 
-        self.status_filter = SupplierComboBox()
-        self.status_filter.addItems(["All Status", "Pending", "Received"])
-        self.status_filter.setMinimumWidth(150)
-        self.status_filter.currentIndexChanged.connect(self._apply_filters)
+        self.status_filter_all = QPushButton("All")
+        self.status_filter_pending = QPushButton("Pending")
+        self.status_filter_received = QPushButton("Received")
+
+        self.status_filter_group = QButtonGroup(self)
+        for btn in (self.status_filter_all, self.status_filter_pending, self.status_filter_received):
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet("""
+                QPushButton { padding: 8px 14px; border-radius: 6px; font-weight: bold; background: #E8E2D5; color: #444; border: none; }
+                QPushButton:checked { background: #C09E3B; color: white; }
+            """)
+            btn.clicked.connect(self._apply_filters)
+            self.status_filter_group.addButton(btn)
+        self.status_filter_all.setChecked(True)
 
         self.date_range_filter = SupplierComboBox()
         self.date_range_filter.addItems(["Date Range", "All Time"])
@@ -199,9 +212,17 @@ class PurchaseOrdersView(QWidget):
         self.new_po_btn.setStyleSheet(GOLD_FILLED_BTN_STYLE)
         self.new_po_btn.clicked.connect(self._open_new_po_panel)
 
+        self.manage_suppliers_btn = QPushButton("Manage Suppliers")
+        self.manage_suppliers_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.manage_suppliers_btn.setStyleSheet(GOLD_OUTLINE_BTN_STYLE)
+        self.manage_suppliers_btn.clicked.connect(self.manage_suppliers_requested.emit)
+
         row.addWidget(search_frame, 2)
-        row.addWidget(self.status_filter)
+        row.addWidget(self.status_filter_all)
+        row.addWidget(self.status_filter_pending)
+        row.addWidget(self.status_filter_received)
         row.addWidget(self.date_range_filter)
+        row.addWidget(self.manage_suppliers_btn)
         row.addWidget(self.new_po_btn)
         return row
 
@@ -452,12 +473,7 @@ class PurchaseOrdersView(QWidget):
         supplier_row.setSpacing(10)
 
         self.supplier_combo = SupplierComboBox()
-        self.supplier_combo.addItems([
-            "Select Supplier",
-            "Manila Textile Co.",
-            "Skincare Lab Ph",
-            "Apparel Prime Inc.",
-        ])
+        self.supplier_combo.addItem("Select Supplier")
 
         add_sup_btn = QPushButton("＋ Add Supplier")
         add_sup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -853,14 +869,29 @@ class PurchaseOrdersView(QWidget):
             QMessageBox.warning(self, "Validation Error", "Please enter a supplier name.")
             return
 
-        existing = [
-            self.supplier_combo.itemText(i)
-            for i in range(self.supplier_combo.count())
-        ]
-        if name not in existing:
-            self.supplier_combo.addItem(name)
+        location = self.sup_address_input.text().strip()
+        contact = self.sup_phone_input.text().strip()
+
+        # Persist to the database via the controller. set_supplier_list()
+        # (called back by the controller once it's saved) is what actually
+        # refreshes the dropdown, so the combo always reflects real data.
+        self.quick_add_supplier_requested.emit(name, location, contact)
         self.supplier_combo.setCurrentText(name)
         self._cancel_add_supplier()
+
+    def set_supplier_list(self, suppliers):
+        """Repopulates the New PO panel's supplier dropdown from the
+        database. Called by the controller on load and after any
+        supplier is added/edited/deleted."""
+        current = self.supplier_combo.currentText()
+        self.supplier_combo.blockSignals(True)
+        self.supplier_combo.clear()
+        self.supplier_combo.addItem("Select Supplier")
+        for sup in suppliers:
+            self.supplier_combo.addItem(sup["name"])
+        idx = self.supplier_combo.findText(current)
+        self.supplier_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.supplier_combo.blockSignals(False)
 
     # ------------------------------------------------------------------
     # Submit
@@ -941,7 +972,12 @@ class PurchaseOrdersView(QWidget):
 
     def _apply_filters(self):
         search_text = self.search_input.text().strip().lower()
-        status = self.status_filter.currentText()
+        if self.status_filter_pending.isChecked():
+            status = "Pending"
+        elif self.status_filter_received.isChecked():
+            status = "Received"
+        else:
+            status = "All Status"
 
         def matches(po):
             if status != "All Status" and po["status"] != status:

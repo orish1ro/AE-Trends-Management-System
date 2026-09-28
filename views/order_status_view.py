@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
                              QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, 
-                             QButtonGroup, QDialog, QComboBox, QScrollArea, QMessageBox)
+                             QButtonGroup, QDialog, QComboBox, QScrollArea, QMessageBox,
+                             QSizePolicy)
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
@@ -64,6 +65,25 @@ class OrderStatusView(QWidget):
         tab_layout.addStretch()
         layout.addLayout(tab_layout)
 
+        # Status Filter (Pending / Completed)
+        status_layout = QHBoxLayout()
+        self.btn_status_pending = QPushButton("Pending")
+        self.btn_status_completed = QPushButton("Completed")
+
+        self.status_group = QButtonGroup(self)
+        for btn in [self.btn_status_pending, self.btn_status_completed]:
+            btn.setCheckable(True)
+            btn.setStyleSheet("""
+                QPushButton { padding: 6px 16px; border-radius: 6px; font-weight: bold; background: transparent; color: #6E6560; border: 1px solid #D9D2C2; }
+                QPushButton:checked { background: #2A2421; color: white; border: 1px solid #2A2421; }
+            """)
+            btn.clicked.connect(self.filter_changed.emit)
+            self.status_group.addButton(btn)
+            status_layout.addWidget(btn)
+        self.btn_status_pending.setChecked(True)
+        status_layout.addStretch()
+        layout.addLayout(status_layout)
+
         # Search box
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search Customer Name...")
@@ -87,7 +107,59 @@ class OrderStatusView(QWidget):
             QTableWidget { background: white; border-radius: 8px; border: 1px solid #E5E0D5; color: #2A2421; }
             QTableWidget::item:selected { background-color: #F3E7C2; color: #2A2421; }
         """)
+        # Give rows a fixed, known height so the table's overall height can be
+        # computed deterministically (see _apply_table_fixed_height below).
+        self.table.verticalHeader().setDefaultSectionSize(40)
+        # Cap the table's height to exactly one page of rows instead of letting
+        # it stretch to fill the remaining vertical space. Any leftover space
+        # in the window is pushed below the pagination controls instead.
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self.table)
+
+        # Pagination controls
+        self.page_size = 10
+        self.current_page = 1
+        self.all_orders = []
+
+        pagination_layout = QHBoxLayout()
+        self.btn_prev_page = QPushButton("◀ Prev")
+        self.btn_next_page = QPushButton("Next ▶")
+        self.page_label = QLabel("Page 1 of 1")
+
+        for btn in (self.btn_prev_page, self.btn_next_page):
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet("""
+                QPushButton { padding: 6px 14px; border-radius: 6px; font-weight: bold; background: #E8E2D5; color: #444; border: none; }
+                QPushButton:disabled { background: #F1EDE3; color: #B8B0A4; }
+                QPushButton:hover:!disabled { background: #DCD4C2; }
+            """)
+        self.page_label.setStyleSheet("color: #6E6560; font-weight: 600;")
+
+        self.btn_prev_page.clicked.connect(self._go_prev_page)
+        self.btn_next_page.clicked.connect(self._go_next_page)
+
+        pagination_layout.addStretch()
+        pagination_layout.addWidget(self.btn_prev_page)
+        pagination_layout.addWidget(self.page_label)
+        pagination_layout.addWidget(self.btn_next_page)
+        pagination_layout.addStretch()
+        layout.addLayout(pagination_layout)
+
+        # Any extra vertical space in the window collects here, below the
+        # pagination controls, instead of inside the table.
+        layout.addStretch(1)
+
+        self._apply_table_fixed_height()
+
+    def _apply_table_fixed_height(self):
+        """Fixes the table's height to exactly one page's worth of rows
+        (self.page_size), regardless of how many rows are actually populated
+        on the current page. Keeps the table a consistent size across pages
+        so a short last page doesn't leave a big blank area inside the grid."""
+        row_h = self.table.verticalHeader().defaultSectionSize()
+        header_h = self.table.horizontalHeader().height()
+        frame = 2 * self.table.frameWidth()
+        self.table.setFixedHeight(header_h + row_h * self.page_size + frame)
 
     def get_active_tab(self):
         if self.btn_online.isChecked():
@@ -96,8 +168,49 @@ class OrderStatusView(QWidget):
             return "Walk-in Registers"
         return "All Orders"
 
+    def get_status_filter(self):
+        if self.btn_status_completed.isChecked():
+            return "Completed"
+        return "Pending"
+
+    def _go_prev_page(self):
+        if self.current_page > 1:
+            self.current_page -= 1
+            self._render_page()
+
+    def _go_next_page(self):
+        total_pages = max(1, -(-len(self.all_orders) // self.page_size))  # ceil division
+        if self.current_page < total_pages:
+            self.current_page += 1
+            self._render_page()
+
     def display_orders(self, orders):
+        """Entry point called by the controller with the FULL filtered/searched
+        result set. Stores it and resets back to page 1, then renders."""
+        self.all_orders = orders
+        self.current_page = 1
+        self._render_page()
+
+    def _render_page(self):
+        total = len(self.all_orders)
+        total_pages = max(1, -(-total // self.page_size))  # ceil division
+        self.current_page = min(self.current_page, total_pages)
+
+        start = (self.current_page - 1) * self.page_size
+        end = start + self.page_size
+        page_orders = self.all_orders[start:end]
+
+        self.page_label.setText(f"Page {self.current_page} of {total_pages}")
+        self.btn_prev_page.setEnabled(self.current_page > 1)
+        self.btn_next_page.setEnabled(self.current_page < total_pages)
+
+        self._render_rows(page_orders, row_offset=start)
+
+    def _render_rows(self, orders, row_offset=0):
         self.table.setRowCount(len(orders))
+        # Row numbers continue across pages (page 2 starts at 11, 12, ...)
+        # instead of resetting back to 1 on every page.
+        self.table.setVerticalHeaderLabels([str(row_offset + i + 1) for i in range(len(orders))])
         for row, ord_item in enumerate(orders):
             order_code = ord_item['order_code']
             
@@ -132,16 +245,28 @@ class OrderStatusView(QWidget):
             self.table.setItem(row, 4, QTableWidgetItem(ord_item['order_date']))
             self.table.setItem(row, 5, QTableWidgetItem(f"₱{ord_item['total_amount']:,.2f}"))
             
-            # Interactive Dropdown 
-            combo = QComboBox()
-            combo.addItems(["Pending", "Paid", "Prepared", "Shipped", "Cancelled"])
-            combo.setCurrentText(ord_item['status'])
-            combo.setStyleSheet("""
-                QComboBox { combobox-popup: 0; padding: 4px; border: 1px solid #D9D2C2; border-radius: 4px; background: white; color: #2A2421;}
-                QComboBox::drop-down { border: none; width: 20px; }
-                QComboBox QAbstractItemView { background-color: white; border: 1px solid #D9D2C2; selection-background-color: #F3E7C2; selection-color: #2A2421; outline: none; }
-            """)
-            self.table.setCellWidget(row, 6, combo)
+            is_in_progress = ord_item['status'] in ("Pending", "Paid", "Prepared", "Shipped")
+
+            if is_in_progress:
+                # Interactive Dropdown - only for orders still in the active queue.
+                combo = QComboBox()
+                combo.addItems(["Pending", "Paid", "Prepared", "Shipped", "Cancelled"])
+                combo.setCurrentText(ord_item['status'])
+                combo.setStyleSheet("""
+                    QComboBox { combobox-popup: 0; padding: 4px; border: 1px solid #D9D2C2; border-radius: 4px; background: white; color: #2A2421;}
+                    QComboBox::drop-down { border: none; width: 20px; }
+                    QComboBox QAbstractItemView { background-color: white; border: 1px solid #D9D2C2; selection-background-color: #F3E7C2; selection-color: #2A2421; outline: none; }
+                """)
+                self.table.setCellWidget(row, 6, combo)
+            else:
+                # Completed (and any other closed status) - read-only badge, no dropdown.
+                badge_container = QWidget()
+                badge_layout = QHBoxLayout(badge_container)
+                badge_layout.setContentsMargins(0, 0, 0, 0)
+                badge_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                badge_layout.addWidget(status_badge(ord_item['status']))
+                self.table.setCellWidget(row, 6, badge_container)
+                combo = None
 
             # Action Button - this is the single point that actually saves
             # anything. Picking "Cancelled" in the dropdown only stages it
@@ -149,14 +274,14 @@ class OrderStatusView(QWidget):
             # nothing is written to the database until this button is
             # clicked. Picking any of the in-progress statuses still saves
             # immediately, same as before, since those aren't destructive.
-            is_in_progress = ord_item['status'] in ("Pending", "Paid", "Prepared", "Shipped")
             btn = QPushButton("Confirm Transaction" if is_in_progress else "View")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self._style_action_button(btn, is_cancel_style=False)
 
-            combo.currentTextChanged.connect(
-                lambda text, oc=order_code, cb=combo, b=btn: self._on_status_choice(oc, text, cb, b)
-            )
+            if is_in_progress:
+                combo.currentTextChanged.connect(
+                    lambda text, oc=order_code, cb=combo, b=btn: self._on_status_choice(oc, text, cb, b)
+                )
             btn.clicked.connect(
                 lambda checked, oc=order_code, cb=combo, ip=is_in_progress: self._on_action_clicked(oc, cb, ip)
             )
@@ -195,7 +320,7 @@ class OrderStatusView(QWidget):
     def _on_action_clicked(self, order_code, combo, was_in_progress):
         """The single save point. Reads whatever is currently staged in the
         dropdown and asks for a final confirmation before committing."""
-        current = combo.currentText()
+        current = combo.currentText() if combo is not None else None
 
         if current == "Cancelled":
             reply = QMessageBox.question(

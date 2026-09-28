@@ -127,8 +127,9 @@ class TransactionController:
     def load_orders(self):
         current_tab = self.status_view.get_active_tab()
         search = self.status_view.search_input.text().strip()
-        
-        orders = self.txn_model.get_all_orders(current_tab, search)
+        status_filter = self.status_view.get_status_filter()
+
+        orders = self.txn_model.get_all_orders(current_tab, search, status_filter)
         self.status_view.display_orders(orders)
         
     def handle_order_confirmation(self, order_code):
