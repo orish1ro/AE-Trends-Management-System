@@ -19,6 +19,18 @@ class POModel:
     def __init__(self, db_manager, staff_id=1):
         self.db = db_manager
         self.staff_id = staff_id
+        self._ensure_pending_column()
+
+    def _ensure_pending_column(self):
+        """A brand-new product that first appears on a Purchase Order is flagged
+        IsPendingReceipt=1, which keeps it OUT of Inventory (and New Transaction,
+        etc.) until staff adds it through Inventory > Add New Product. Receiving
+        the PO does not add it (safe to run every time)."""
+        with self.db.get_connection() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(Product)")}
+            if cols and "IsPendingReceipt" not in cols:
+                conn.execute("ALTER TABLE Product ADD COLUMN IsPendingReceipt INTEGER NOT NULL DEFAULT 0")
+                conn.commit()
 
     def get_all_po(self):
         query = """
@@ -43,17 +55,23 @@ class POModel:
         ]
 
     def get_all_po_items(self, limit=200):
-        """Every line item across every purchase order (Pending and
-        Received), most recent order first. Used by the Inventory 'Add
-        Product' dialog so a product can be imported straight from what
-        was purchased instead of retyping it."""
+        """Every line item from RECEIVED purchase orders, most recent order
+        first. Pending (and Cancelled) purchase orders are left out on
+        purpose: their items only show up here once the PO is marked
+        Received. Used by the Inventory 'Add Product' dialog so a product
+        can be imported straight from what was purchased instead of
+        retyping it."""
         query = """
             SELECT po.PurchaseOrderID, po.OrderDate, po.Status,
-                   s.SupplierName, p.ProductName, pod.Quantity, pod.UnitCost
+                   s.SupplierName, p.ProductName, pod.Quantity, pod.UnitCost,
+                   COALESCE(p.IsArchived, 0) AS IsArchived,
+                   COALESCE(p.IsPendingReceipt, 0) AS IsPendingReceipt,
+                   p.StockQuantity AS StockOnHand
             FROM PurchaseOrderDetails pod
             JOIN PurchaseOrder po ON po.PurchaseOrderID = pod.PurchaseOrderID
             JOIN Supplier s ON s.SupplierID = po.SupplierID
             JOIN Product p ON p.ProductID = pod.ProductID
+            WHERE po.Status = 'Received'
             ORDER BY po.PurchaseOrderID DESC, pod.PODetailsID
             LIMIT ?
         """
@@ -68,6 +86,14 @@ class POModel:
                 "unit_cost": r["UnitCost"],
                 "status": r["Status"],
                 "order_date": nice_date(r["OrderDate"]),
+                # not_added    = brand-new product, staff hasn't added it to Inventory yet
+                # archived     = it was added, then archived
+                # in_inventory = already in Inventory (a Received PO just restocks it)
+                "inventory_state": ("not_added" if r["IsPendingReceipt"]
+                                    else "archived" if r["IsArchived"] else "in_inventory"),
+                # what has been received so far for a not-yet-added product,
+                # so the Add Product form can start from the right stock number
+                "stock_on_hand": r["StockOnHand"] or 0,
             }
             for r in rows
         ]
@@ -90,7 +116,8 @@ class POModel:
             if not order:
                 return None
             rows = conn.execute(
-                """SELECT p.ProductName, pod.Quantity, pod.UnitCost
+                """SELECT p.ProductName, pod.Quantity, pod.UnitCost,
+                          pod.UnitSize, pod.UnitMeasure
                    FROM PurchaseOrderDetails pod
                    JOIN Product p ON p.ProductID = pod.ProductID
                    WHERE pod.PurchaseOrderID = ?
@@ -108,6 +135,8 @@ class POModel:
                 {
                     "name": row["ProductName"],
                     "quantity": row["Quantity"],
+                    "size": row["UnitSize"],
+                    "measure": row["UnitMeasure"],
                     "unit_cost": row["UnitCost"],
                     "line_total": row["Quantity"] * row["UnitCost"],
                 }
@@ -205,8 +234,9 @@ class POModel:
             return row["ProductID"]
         supplier_id = self._get_or_create_supplier(conn, "General Supplier")
         cur = conn.execute(
-            """INSERT INTO Product (SupplierID, StaffID, ProductName, Price, StockQuantity)
-               VALUES (?, ?, ?, ?, 0)""",
+            """INSERT INTO Product (SupplierID, StaffID, ProductName, Price, StockQuantity,
+                                    IsPendingReceipt)
+               VALUES (?, ?, ?, ?, 0, 1)""",
             (supplier_id, self.staff_id, product_name, unit_cost),
         )
         return cur.lastrowid
@@ -242,19 +272,24 @@ class POModel:
                     product_id = self._get_or_create_product(conn, p_name, p_cost)
                     conn.execute(
                         """INSERT INTO PurchaseOrderDetails (PurchaseOrderID, ProductID,
-                                                              Quantity, UnitCost)
-                           VALUES (?, ?, ?, ?)""",
-                        (po_id, product_id, p_qty, p_cost),
+                                                              Quantity, UnitCost,
+                                                              UnitSize, UnitMeasure)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (po_id, product_id, p_qty, p_cost,
+                         item.get('size'), item.get('unit')),
                     )
             conn.commit()
             return po_number(po_id)
 
     def mark_po_received(self, po_code):
-        """Updates PO to Received AND automatically adds the items to your inventory stock."""
+        """Updates PO to Received AND automatically adds the items to your
+        inventory stock. Returns a list of {name, previous_qty, added_qty,
+        new_qty} per item, so the UI can show exactly what changed instead
+        of restocking silently."""
         try:
             po_id = int(po_code.split("-")[-1])
         except (ValueError, IndexError):
-            return
+            return []
 
         with self.db.get_connection() as conn:
             # 1. Update the status
@@ -262,17 +297,46 @@ class POModel:
                 "UPDATE PurchaseOrder SET Status = 'Received' WHERE PurchaseOrderID = ?",
                 (po_id,)
             )
-            
-            # 2. Fetch the items inside this order
+            po_row = conn.execute(
+                "SELECT SupplierID FROM PurchaseOrder WHERE PurchaseOrderID = ?", (po_id,)
+            ).fetchone()
+
+            # 2. Fetch the items inside this order, along with each
+            #    product's stock level right before we touch it.
             items = conn.execute(
-                "SELECT ProductID, Quantity FROM PurchaseOrderDetails WHERE PurchaseOrderID = ?",
+                """SELECT pod.ProductID, pod.Quantity, p.ProductName, p.StockQuantity,
+                          COALESCE(p.IsPendingReceipt, 0) AS IsNew
+                   FROM PurchaseOrderDetails pod
+                   JOIN Product p ON p.ProductID = pod.ProductID
+                   WHERE pod.PurchaseOrderID = ?""",
                 (po_id,)
             ).fetchall()
-            
-            # 3. Auto-restock your inventory table
+
+            # 3. Auto-restock your inventory table, and remember the
+            #    before/after for each product.
+            restocked = []
             for item in items:
+                previous_qty = item["StockQuantity"] or 0
+                added_qty = item["Quantity"] or 0
+                new_qty = previous_qty + added_qty
                 conn.execute(
-                    "UPDATE Product SET StockQuantity = StockQuantity + ? WHERE ProductID = ?",
-                    (item["Quantity"], item["ProductID"])
+                    "UPDATE Product SET StockQuantity = ? WHERE ProductID = ?",
+                    (new_qty, item["ProductID"])
                 )
+                # Remember who supplied it, so Inventory can show the supplier.
+                if po_row:
+                    conn.execute(
+                        "UPDATE Product SET SupplierID = ? WHERE ProductID = ?",
+                        (po_row["SupplierID"], item["ProductID"])
+                    )
+                # A brand-new product stays hidden even now: staff still has to add
+                # it via Add New Product ("is_new" lets the UI say so).
+                restocked.append({
+                    "is_new": bool(item["IsNew"]),
+                    "name": item["ProductName"],
+                    "previous_qty": previous_qty,
+                    "added_qty": added_qty,
+                    "new_qty": new_qty,
+                })
             conn.commit()
+        return restocked

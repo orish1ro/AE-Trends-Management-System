@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QCheckBox, QFrame, QStackedWidget
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
+from views.responsive import fit_window
 
 FIELD_LABEL_STYLE = "font-size: 12px; font-weight: 600; color: #8A8074; border: none; background: transparent;"
 
@@ -25,7 +26,7 @@ class LoginView(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AE Trends - Login")
-        self.resize(1100, 700)
+        fit_window(self, 1100, 700, min_w=720, min_h=560)
 
         self.setObjectName("loginWindow")
         self.setStyleSheet("#loginWindow { background-color: #F6F2E9; }")

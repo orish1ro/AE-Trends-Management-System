@@ -117,7 +117,7 @@ class ReportController:
                 "SELECT COALESCE(SUM(TotalAmount), 0) FROM Orders WHERE date(OrderDate) = date('now', 'localtime', '-1 day')"
             ).fetchone()[0]
             products = [
-                dict(row) for row in conn.execute("SELECT * FROM Product WHERE COALESCE(IsArchived, 0) = 0")
+                dict(row) for row in conn.execute("SELECT * FROM Product WHERE COALESCE(IsArchived, 0) = 0 AND COALESCE(IsPendingReceipt, 0) = 0")
             ]
             span_days = (datetime.strptime(to_date, "%Y-%m-%d") - datetime.strptime(from_date, "%Y-%m-%d")).days + 1
             prev_end = (datetime.strptime(from_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")

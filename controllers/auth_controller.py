@@ -70,10 +70,11 @@ class AuthController:
         po_model = POModel(self.db, staff_id)
 
         self.inv_ctrl = InventoryController(inv_model, self.main_window.inventory_view, po_model=po_model)
-        self.hist_ctrl = HistoryController(HistoryModel(self.db), self.main_window.transaction_history_view)
+        self.hist_ctrl = HistoryController(HistoryModel(self.db), self.main_window.transaction_history_view,
+                                          generated_by=user["full_name"])
         self.txn_ctrl = TransactionController(
             txn_model, inv_model, self.main_window.record_tx_view,
-            self.main_window.order_status_view, on_order_saved=self.hist_ctrl.load)
+            self.main_window.order_status_view, on_order_saved=self._handle_order_saved)
         self.po_ctrl = POController(
             po_model, self.main_window.purchase_orders_view,
             on_po_saved=self._handle_po_saved, inv_model=inv_model)
@@ -104,14 +105,28 @@ class AuthController:
         data, so it never goes stale."""
         self.inv_ctrl.load_products()
         self.po_ctrl.refresh_available_products()
+        self.txn_ctrl.load_catalog()
 
-    def _handle_po_saved(self):
+    def _handle_order_saved(self):
+        """An order was placed, confirmed, cancelled or its status changed,
+        which changes stock: refresh transaction history AND the Inventory
+        page so the stock numbers match everywhere."""
+        self.hist_ctrl.load()
+        self.inv_ctrl.load_products()
+
+    def _handle_po_saved(self, restock=None):
         """A Purchase Order was created or marked Received (which restocks
         or auto-creates products): refresh transaction history, inventory,
-        and the PO product dropdown so everything stays consistent."""
+        and the PO product dropdown so everything stays consistent. When
+        a PO was just marked Received, `restock` carries exactly what
+        changed so Inventory can show a proper notification about it."""
+        if restock and restock.get("items"):
+            self.main_window.inventory_view.show_restock_notice(
+                restock.get("po_number", ""), restock["items"])
         self.hist_ctrl.load()
         self.inv_ctrl.load_products()
         self.po_ctrl.refresh_available_products()
+        self.txn_ctrl.load_catalog()
 
     def handle_logout(self):
         self.main_window.hide()

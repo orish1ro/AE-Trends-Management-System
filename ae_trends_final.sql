@@ -133,6 +133,8 @@ CREATE TABLE IF NOT EXISTS PurchaseOrderDetails (
     ProductID        INTEGER NOT NULL,
     Quantity         INTEGER NOT NULL CHECK (Quantity > 0),
     UnitCost         REAL NOT NULL CHECK (UnitCost >= 0),
+    UnitSize         REAL,
+    UnitMeasure      TEXT,
     FOREIGN KEY (PurchaseOrderID) REFERENCES PurchaseOrder(PurchaseOrderID) ON DELETE CASCADE,
     FOREIGN KEY (ProductID)       REFERENCES Product(ProductID)
 );

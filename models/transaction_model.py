@@ -142,10 +142,32 @@ class TransactionModel:
             return False
 
         with self.db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT OrderStatus FROM Orders WHERE OrderID = ?", (order_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            old_status = row["OrderStatus"]
+
             conn.execute(
                 "UPDATE Orders SET OrderStatus = ? WHERE OrderID = ?",
                 (new_status, order_id)
             )
+
+            # Stock is taken out when the order is created, so a cancelled
+            # order must put its items back. Only do it once (old_status
+            # check) so cancelling twice can never add stock twice.
+            if new_status == "Cancelled" and old_status != "Cancelled":
+                conn.execute(
+                    """UPDATE Product
+                       SET StockQuantity = StockQuantity + (
+                           SELECT COALESCE(SUM(od.Quantity), 0)
+                           FROM OrderDetails od
+                           WHERE od.OrderID = ? AND od.ProductID = Product.ProductID)
+                       WHERE ProductID IN (
+                           SELECT ProductID FROM OrderDetails WHERE OrderID = ?)""",
+                    (order_id, order_id),
+                )
             conn.commit()
         return True
 

@@ -5,6 +5,10 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
+# The order-details pop-up is shared with Transaction History so both pages
+# show the same modern layout (defined in views/transaction_history_view.py).
+from views.transaction_history_view import OrderDetailDialog  # noqa: F401
+
 LABEL_RESET = "background: transparent; border: none;"
 
 def status_badge(text):
@@ -340,70 +344,3 @@ class OrderStatusView(QWidget):
             self.confirm_requested.emit(order_code)
         else:
             self.view_requested.emit(order_code)
-
-
-class OrderDetailDialog(QDialog):
-    """Professional, scrollable popup for viewing full order details."""
-    def __init__(self, parent, detail):
-        super().__init__(parent)
-        self.setWindowTitle(f"Order Details - {detail['code']}")
-        self.setMinimumWidth(480)
-        self.setStyleSheet("background-color: #FFFFFF;")
-
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("border: none;")
-        inner = QWidget()
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
-
-        def section(title):
-            lbl = QLabel(title)
-            lbl.setStyleSheet(f"font-size: 13px; font-weight: bold; color: #C09E3B; {LABEL_RESET}")
-            layout.addWidget(lbl)
-
-        def row(label, value):
-            r = QHBoxLayout()
-            l1 = QLabel(label)
-            l1.setStyleSheet(f"color: #888888; font-size: 12px; {LABEL_RESET}")
-            l2 = QLabel(str(value))
-            l2.setStyleSheet(f"color: #2A2421; font-size: 12px; font-weight: 600; {LABEL_RESET}")
-            l2.setAlignment(Qt.AlignmentFlag.AlignRight)
-            r.addWidget(l1)
-            r.addWidget(l2)
-            layout.addLayout(r)
-
-        title_lbl = QLabel(detail["code"])
-        title_lbl.setStyleSheet(f"font-size: 18px; font-weight: bold; color: #2A2421; {LABEL_RESET}")
-        layout.addWidget(title_lbl)
-        
-        badge_layout = QHBoxLayout()
-        badge_layout.addWidget(status_badge(detail["status"]))
-        badge_layout.addStretch()
-        layout.addLayout(badge_layout)
-
-        section("Order Information")
-        row("Customer", detail["customer"])
-        row("Contact", detail["contact"])
-        row("Platform", detail["platform"])
-        row("Date & Time", detail["date"])
-        row("Processed By", detail["processed_by"])
-        row("Delivery Address", detail["delivery_address"])
-
-        section("Products Purchased")
-        for it in detail["items"]:
-            row(f"{it['name']} (x{it['quantity']})",
-                f"₱{it['unit_price']:,.2f} each = ₱{it['subtotal']:,.2f}")
-        row("Total Quantity", detail["total_quantity"])
-        row("Total Amount", f"₱{detail['total_amount']:,.2f}")
-
-        section("Payment Information")
-        row("Mode of Payment", detail["payment_method"])
-        row("Payment Status", detail["payment_status"])
-        row("Reference No.", detail["payment_reference"])
-
-        scroll.setWidget(inner)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)

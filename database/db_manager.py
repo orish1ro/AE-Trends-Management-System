@@ -15,6 +15,7 @@ class DatabaseManager:
         # If the database file already exists, don't touch it.
         # This protects your saved data every time the app starts.
         if os.path.exists(self.db_path):
+            self._migrate_po_unit_columns()
             return
 
         sql_file = "ae_trends_final.sql"
@@ -38,3 +39,17 @@ class DatabaseManager:
             print(f"Database created from {sql_file}.")
         else:
             print(f"Error: {sql_file} not found in project directory.")
+
+    def _migrate_po_unit_columns(self):
+        """Adds UnitSize / UnitMeasure to PurchaseOrderDetails on databases
+        created before those columns existed. Safe to run every startup."""
+        with self.get_connection() as conn:
+            cols = {r["name"] for r in conn.execute(
+                "PRAGMA table_info(PurchaseOrderDetails)").fetchall()}
+            if not cols:
+                return
+            if "UnitSize" not in cols:
+                conn.execute("ALTER TABLE PurchaseOrderDetails ADD COLUMN UnitSize REAL")
+            if "UnitMeasure" not in cols:
+                conn.execute("ALTER TABLE PurchaseOrderDetails ADD COLUMN UnitMeasure TEXT")
+            conn.commit()

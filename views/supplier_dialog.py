@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QWidget, QMessageBox,
 )
 from PyQt6.QtCore import Qt
+from views.responsive import clamp_dialog_min
 
 RESET = "background: transparent; border: none;"
 GOLD = "#C09E3B"
@@ -138,7 +139,7 @@ class SupplierManagerDialog(QDialog):
         self.on_delete = on_delete
 
         self.setWindowTitle("Manage Suppliers")
-        self.setMinimumSize(640, 420)
+        clamp_dialog_min(self, 640, 420)
         self.setStyleSheet("background: #F7F3EB;")
 
         layout = QVBoxLayout(self)

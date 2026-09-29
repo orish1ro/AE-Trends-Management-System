@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 REORDER_LEVEL = 10          # below or equal to this = "Low Stock"
 EXPIRING_WITHIN_DAYS = 60    # within this many days = "Expiring Soon"
+PLACEHOLDER_SUPPLIER = "General Supplier"   # stand-in when a product has no known supplier
 
 
 def compute_status(stock_qty, expiration_date, reorder_level=REORDER_LEVEL):
@@ -38,14 +39,38 @@ class InventoryModel:
                 "ImagePath": "TEXT",
                 "ReorderLevel": "INTEGER NOT NULL DEFAULT 10",
                 "IsArchived": "INTEGER NOT NULL DEFAULT 0",
+                # 1 = a brand-new product that came from a purchase order and that
+                # staff hasn't added yet, so it stays hidden until they add it.
+                "IsPendingReceipt": "INTEGER NOT NULL DEFAULT 0",
             }
             for name, definition in migrations.items():
                 if name not in columns:
                     conn.execute(f"ALTER TABLE Product ADD COLUMN {name} {definition}")
             conn.commit()
 
-    def get_all_products(self, search="", category="All", status="All"):
-        query = "SELECT * FROM Product WHERE COALESCE(IsArchived, 0) = 0"
+    def get_all_products(self, search="", category="All", status="All", archived=False):
+        """archived=False -> normal products; archived=True -> only archived ones.
+        Brand-new products that only exist because of a purchase order are never
+        listed until staff adds them through Add New Product."""
+        # UnitsSold = total quantity on orders that were not Cancelled / Refunded.
+        query = f"""
+            SELECT p.*,
+                   COALESCE((SELECT SUM(od.Quantity)
+                             FROM OrderDetails od
+                             JOIN Orders o ON o.OrderID = od.OrderID
+                             WHERE od.ProductID = p.ProductID
+                               AND o.OrderStatus NOT IN ('Cancelled', 'Refunded')), 0) AS UnitsSold,
+                   (SELECT s.SupplierName FROM Supplier s
+                    WHERE s.SupplierID = p.SupplierID) AS OwnSupplier,
+                   (SELECT s2.SupplierName
+                    FROM PurchaseOrderDetails pod
+                    JOIN PurchaseOrder po ON po.PurchaseOrderID = pod.PurchaseOrderID
+                    JOIN Supplier s2 ON s2.SupplierID = po.SupplierID
+                    WHERE pod.ProductID = p.ProductID AND po.Status = 'Received'
+                    ORDER BY po.PurchaseOrderID DESC LIMIT 1) AS PoSupplier
+            FROM Product p
+            WHERE COALESCE(p.IsArchived, 0) = {1 if archived else 0}
+              AND COALESCE(p.IsPendingReceipt, 0) = 0"""
         params = []
         if search:
             query += " AND (ProductName LIKE ? OR SKU LIKE ?)"
@@ -64,8 +89,14 @@ class InventoryModel:
             computed_status = compute_status(r["StockQuantity"], r["ExpirationDate"], reorder_level)
             if status not in ("All", "Status: All Stock") and computed_status != status:
                 continue
+            # Supplier = the product's own supplier when one was set; otherwise the
+            # supplier on its latest Received purchase order. "General Supplier" is only
+            # a placeholder the app uses when nothing is known, so it shows as blank.
+            own = (r["OwnSupplier"] or "").strip()
+            supplier = own if own and own != PLACEHOLDER_SUPPLIER else (r["PoSupplier"] or "")
             products.append({
                 "id": r["ProductID"],
+                "supplier": supplier,
                 "sku": r["SKU"] or f"SKU-{r['ProductID']:04d}",
                 "name": r["ProductName"],
                 "category": r["Category"] or "",
@@ -75,6 +106,8 @@ class InventoryModel:
                 "image_path": r["ImagePath"] or "",
                 "expiration_date": r["ExpirationDate"] or "-",
                 "status": computed_status,
+                "units_sold": r["UnitsSold"] or 0,
+                "date_added": r["DateAdded"] or "",
             })
         return products
 
@@ -88,9 +121,36 @@ class InventoryModel:
         )
         return cur.lastrowid
 
-    def add_product(self, name, category, price, stock, reorder, exp_date, sku="", image_path=""):
+    def _supplier_id_for(self, conn, supplier_name):
+        """SupplierID for a name (created if new). A blank name gives the
+        'General Supplier' placeholder instead of some random supplier."""
+        name = (supplier_name or "").strip() or PLACEHOLDER_SUPPLIER
+        row = conn.execute(
+            "SELECT SupplierID FROM Supplier WHERE LOWER(SupplierName) = LOWER(?)", (name,)).fetchone()
+        if row:
+            return row["SupplierID"]
+        return conn.execute("INSERT INTO Supplier (SupplierName) VALUES (?)", (name,)).lastrowid
+
+    def add_product(self, name, category, price, stock, reorder, exp_date, sku="", image_path="", supplier=""):
         with self.db.get_connection() as conn:
-            supplier_id = self._get_or_create_supplier(conn)
+            supplier_id = self._supplier_id_for(conn, supplier)
+            # A purchase order may have already created a hidden product with this
+            # name. Fill that one in (and reveal it) instead of making a duplicate.
+            # This is the moment the product really "gets added" to Inventory.
+            pending = conn.execute(
+                "SELECT ProductID FROM Product WHERE LOWER(ProductName) = LOWER(?) "
+                "AND COALESCE(IsPendingReceipt, 0) = 1", (name,)).fetchone()
+            if pending:
+                pid = pending["ProductID"]
+                conn.execute(
+                    """UPDATE Product SET ProductName=?, Category=?, Price=?, StockQuantity=?,
+                       ReorderLevel=?, ExpirationDate=?, SKU=?, ImagePath=?, SupplierID=?,
+                       IsPendingReceipt=0, LastEditedAt=datetime('now') WHERE ProductID=?""",
+                    (name, category, price, stock, reorder,
+                     None if exp_date in ("-", "") else exp_date,
+                     sku or f"SKU-{pid:04d}", image_path or None, supplier_id, pid))
+                conn.commit()
+                return
             cursor = conn.execute(
                 """INSERT INTO Product (SupplierID, StaffID, ProductName, Category,
                                         Price, StockQuantity, ExpirationDate, SKU,
@@ -108,8 +168,11 @@ class InventoryModel:
                 )
             conn.commit()
 
-    def update_product(self, product_id, name, sku, category, price, stock, reorder, exp_date, image_path=""):
+    def update_product(self, product_id, name, sku, category, price, stock, reorder, exp_date, image_path="", supplier=""):
         with self.db.get_connection() as conn:
+            if (supplier or "").strip():   # blank = leave the supplier as it is
+                conn.execute("UPDATE Product SET SupplierID=? WHERE ProductID=?",
+                             (self._supplier_id_for(conn, supplier), product_id))
             conn.execute(
                 """UPDATE Product SET ProductName=?, SKU=?, Category=?, Price=?,
                    StockQuantity=?, ReorderLevel=?, ExpirationDate=?, ImagePath=?,
@@ -117,6 +180,24 @@ class InventoryModel:
                 (name, sku or None, category, price, stock, reorder,
                  None if exp_date in ("", "-") else exp_date, image_path or None, product_id),
             )
+            conn.commit()
+
+    def count_open_orders_for_product(self, product_id):
+        """Orders that are not finished yet (still Pending/Paid/Prepared/Shipped)
+        and contain this product."""
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                """SELECT COUNT(DISTINCT o.OrderID) AS n
+                   FROM Orders o JOIN OrderDetails od ON od.OrderID = o.OrderID
+                   WHERE od.ProductID = ?
+                     AND o.OrderStatus IN ('Pending','Paid','Prepared','Shipped')""",
+                (product_id,),
+            ).fetchone()
+        return row["n"] if row else 0
+
+    def restore_product(self, product_id):
+        with self.db.get_connection() as conn:
+            conn.execute("UPDATE Product SET IsArchived=0, LastEditedAt=datetime('now') WHERE ProductID=?", (product_id,))
             conn.commit()
 
     def archive_product(self, product_id):

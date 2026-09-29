@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFrame, QTableWidget, QTableWidgetItem,
     QHeaderView, QComboBox, QDateEdit, QButtonGroup, QDialog,
-    QScrollArea, QMessageBox, QSizePolicy
+    QScrollArea, QMessageBox, QSizePolicy, QGridLayout, QFileDialog
 )
 from PyQt6.QtCore import Qt, QDate, pyqtSignal, QPoint
 from PyQt6.QtGui import QPainter, QPolygon
@@ -120,21 +120,49 @@ STATUS_COLORS = {
 }
 
 
+def _mix(hex_a, hex_b, t):
+    """Blend two #RRGGBB colours (t=0 -> a, t=1 -> b). Used for the pill border."""
+    a = [int(hex_a[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(hex_b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * t):02X}" for x, y in zip(a, b))
+
+
 def status_badge(text):
+    """Compact status pill: soft background, thin tinted border and a small dot."""
     fg, bg = STATUS_COLORS.get(text, ("#555555", "#EDEDED"))
-    lbl = QLabel(text)
+    border = _mix(bg, fg, 0.22)
+    lbl = QLabel(f"<span style='color:{fg};'>&#9679;</span>&nbsp;&nbsp;{text}")
+    lbl.setTextFormat(Qt.TextFormat.RichText)
     lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lbl.setFixedHeight(24)
+    lbl.setMinimumWidth(96)
+    lbl.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     lbl.setStyleSheet(
-        f"color: {fg}; background-color: {bg}; border: none; "
-        f"border-radius: 10px; padding: 3px 10px; font-size: 11px; font-weight: 600;"
+        f"color: {fg}; background-color: {bg}; border: 1px solid {border}; "
+        f"border-radius: 12px; padding: 0px 12px; font-size: 11px; font-weight: 600;"
     )
     return lbl
+
+
+def centered_cell(widget):
+    """Wraps a widget so it sits centred in its table cell with breathing room,
+    instead of stretching to fill the whole cell."""
+    holder = QWidget()
+    holder.setObjectName("cellHolder")
+    holder.setStyleSheet("QWidget#cellHolder { background: transparent; }")
+    lay = QHBoxLayout(holder)
+    lay.setContentsMargins(8, 0, 8, 0)
+    lay.addStretch()
+    lay.addWidget(widget)
+    lay.addStretch()
+    return holder
 
 
 class TransactionHistoryView(QWidget):
     filters_changed = pyqtSignal()
     view_requested = pyqtSignal(str, int)
     page_changed = pyqtSignal(int)
+    export_pdf_requested = pyqtSignal(str)   # chosen file path
 
     def __init__(self):
         super().__init__()
@@ -211,6 +239,24 @@ class TransactionHistoryView(QWidget):
 
         self.btn_all.setChecked(True)
         tab_row.addStretch()
+
+        self.export_btn = QPushButton("Export PDF")
+        self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.export_btn.setToolTip("Save the transactions matching the current filters as a PDF")
+        self.export_btn.setStyleSheet("""
+            QPushButton {
+                padding: 8px 18px;
+                border-radius: 6px;
+                font-weight: bold;
+                background: #FFFFFF;
+                color: #8A6F1F;
+                border: 1px solid #C09E3B;
+            }
+            QPushButton:hover { background: #F5E8C4; }
+            QPushButton:pressed { background: #EBDCAE; }
+        """)
+        self.export_btn.clicked.connect(self._choose_export_path)
+        tab_row.addWidget(self.export_btn)
         outer.addLayout(tab_row)
 
         filt_card = QFrame()
@@ -392,21 +438,25 @@ class TransactionHistoryView(QWidget):
             QTableWidget {
                 background: white;
                 border: none;
+                color: #2B2620;
+                font-size: 13px;
             }
             QHeaderView::section {
-                background: #F3EEE3;
-                color: #6B6258;
-                font-weight: bold;
+                background: #F7F3EA;
+                color: #7A7064;
+                font-weight: 700;
                 font-size: 11px;
                 border: none;
                 border-bottom: 1px solid #E5E0D5;
-                padding: 10px 6px;
+                padding: 10px 14px;
             }
             QTableWidget::item {
                 border-bottom: 1px solid #F0EAE1;
-                padding: 0px 8px;
+                padding: 0px 14px;
             }
         """)
+        self.table.setShowGrid(False)          # no vertical/horizontal grid lines
+        self.table.setWordWrap(False)          # dates stay on one line
 
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(
@@ -627,6 +677,16 @@ class TransactionHistoryView(QWidget):
         self._apply_tab_columns(self.current_tab)
         self.filters_changed.emit()
 
+    def _choose_export_path(self):
+        from datetime import datetime
+        default = f"transaction_history_{datetime.now():%Y-%m-%d}.pdf"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Transaction History", default, "PDF Files (*.pdf)")
+        if path:
+            if not path.lower().endswith(".pdf"):
+                path += ".pdf"
+            self.export_pdf_requested.emit(path)
+
     def get_active_tab(self):
         if self.btn_orders.isChecked():
             return "Customer Orders"
@@ -693,8 +753,25 @@ class TransactionHistoryView(QWidget):
         )
         self.table.setColumnWidth(
             len(headers) - 1,
-            80
+            96
         )
+
+        # header alignment matches the cells: QTY centred, TOTAL right, STATUS centred
+        for col, text in enumerate(headers):
+            header_item = self.table.horizontalHeaderItem(col)
+            if header_item is None:
+                continue
+            if text in ("QTY", "STATUS"):
+                align = Qt.AlignmentFlag.AlignCenter
+            elif text == "TOTAL":
+                align = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            else:
+                align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            header_item.setTextAlignment(align)
+            if text in ("DATE", "DATE & TIME"):
+                self.table.horizontalHeader().setSectionResizeMode(
+                    col, QHeaderView.ResizeMode.ResizeToContents
+                )
 
         if hasattr(self, '_raw_options'):
             self.status_filter.blockSignals(True)
@@ -719,7 +796,7 @@ class TransactionHistoryView(QWidget):
         btn.setToolTip("View transaction details")
         btn.setAccessibleName("View transaction details")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setMinimumSize(58, 30)
+        btn.setFixedSize(64, 30)
 
         btn.setStyleSheet("""
             QPushButton {
@@ -861,10 +938,20 @@ class TransactionHistoryView(QWidget):
                     & ~Qt.ItemFlag.ItemIsEditable
                 )
 
-                item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignVCenter
-                    | Qt.AlignmentFlag.AlignLeft
-                )
+                header_item = self.table.horizontalHeaderItem(col)
+                header_text = header_item.text() if header_item else ""
+                if header_text == "QTY":
+                    h_align = Qt.AlignmentFlag.AlignHCenter
+                elif header_text == "TOTAL":
+                    h_align = Qt.AlignmentFlag.AlignRight
+                else:
+                    h_align = Qt.AlignmentFlag.AlignLeft
+                item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | h_align)
+
+                if col == 0:                      # order / purchase ID stands out
+                    id_font = item.font()
+                    id_font.setBold(True)
+                    item.setFont(id_font)
 
                 self.table.setItem(
                     row_idx,
@@ -882,307 +969,341 @@ class TransactionHistoryView(QWidget):
             self.table.setCellWidget(
                 row_idx,
                 status_col,
-                status_badge(r["status"])
+                centered_cell(status_badge(r["status"]))
             )
 
             self.table.setCellWidget(
                 row_idx,
                 status_col + 1,
-                self._make_view_button(
+                centered_cell(self._make_view_button(
                     r["kind"],
                     r["id"]
-                )
+                ))
             )
 
 
-class OrderDetailDialog(QDialog):
+# ======================================================================
+# DETAIL POP-UPS (Order / Purchase) - modern card layout
+# ======================================================================
+
+DLG_BG = "#FBF8F1"
+DLG_CARD_BORDER = "#EDE6D6"
+DLG_INK = "#2A2421"
+DLG_MUTED = "#8A8175"
+DLG_GOLD = "#B18F2E"
+
+
+def _dlg_text(text, size=13, weight=500, color=DLG_INK, wrap=True, align=None):
+    lbl = QLabel(str(text))
+    lbl.setStyleSheet(
+        f"color: {color}; font-size: {size}px; font-weight: {weight}; {LABEL_RESET}"
+    )
+    lbl.setWordWrap(wrap)
+    if align is not None:
+        lbl.setAlignment(align)
+    return lbl
+
+
+def _dlg_field(caption, value):
+    """Small muted caption on top, value underneath."""
+    box = QWidget()
+    box.setStyleSheet(LABEL_RESET)
+    lay = QVBoxLayout(box)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(3)
+    lay.addWidget(_dlg_text(caption.upper(), 10, 700, DLG_MUTED, wrap=False))
+    lay.addWidget(_dlg_text(value if str(value).strip() else "-", 13, 600))
+    return box
+
+
+def _dlg_divider():
+    line = QFrame()
+    line.setFixedHeight(1)
+    line.setStyleSheet("background: #F0EAE1; border: none;")
+    return line
+
+
+def _dlg_card(title):
+    """A white rounded card with a gold section title. Returns (card, body_layout)."""
+    card = QFrame()
+    card.setObjectName("dlgCard")
+    card.setStyleSheet(
+        f"QFrame#dlgCard {{ background: #FFFFFF; border: 1px solid {DLG_CARD_BORDER}; "
+        "border-radius: 12px; }}"
+    )
+    lay = QVBoxLayout(card)
+    lay.setContentsMargins(18, 16, 18, 16)
+    lay.setSpacing(12)
+    lay.addWidget(_dlg_text(title.upper(), 11, 800, DLG_GOLD, wrap=False))
+    return card, lay
+
+
+def _dlg_button(text, primary=False, danger=False):
+    btn = QPushButton(text)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setMinimumHeight(36)
+    if danger:
+        btn.setStyleSheet(
+            "QPushButton { background: #FFFFFF; color: #A31E1E; border: 1px solid #E8B5B5; "
+            "border-radius: 8px; padding: 0px 18px; font-size: 13px; font-weight: 700; }"
+            "QPushButton:hover { background: #A31E1E; color: #FFFFFF; border-color: #A31E1E; }"
+        )
+    elif primary:
+        btn.setStyleSheet(
+            "QPushButton { background: #C09E3B; color: #FFFFFF; border: none; "
+            "border-radius: 8px; padding: 0px 22px; font-size: 13px; font-weight: 700; }"
+            "QPushButton:hover { background: #A9872E; }"
+        )
+    else:
+        btn.setStyleSheet(
+            "QPushButton { background: #FFFFFF; color: #4A4238; border: 1px solid #DDD5C3; "
+            "border-radius: 8px; padding: 0px 22px; font-size: 13px; font-weight: 600; }"
+            "QPushButton:hover { background: #F7F3EA; }"
+        )
+    return btn
+
+
+def _dlg_items_table(items, price_key, price_caption):
+    """Product lines: name (+ optional size), qty, unit price, line total."""
+    grid = QGridLayout()
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(14)
+    grid.setVerticalSpacing(0)
+    grid.setColumnStretch(0, 1)
+
+    right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    center = Qt.AlignmentFlag.AlignCenter
+    for col, (text, align) in enumerate(
+        (("Product", Qt.AlignmentFlag.AlignLeft), ("Qty", center),
+         (price_caption, right), ("Subtotal", right))
+    ):
+        grid.addWidget(_dlg_text(text.upper(), 10, 700, DLG_MUTED, wrap=False, align=align), 0, col)
+
+    row = 1
+    for it in items:
+        grid.addWidget(_dlg_divider(), row, 0, 1, 4)
+        row += 1
+
+        name_box = QWidget()
+        name_box.setStyleSheet(LABEL_RESET)
+        nl = QVBoxLayout(name_box)
+        nl.setContentsMargins(0, 9, 0, 9)
+        nl.setSpacing(1)
+        nl.addWidget(_dlg_text(it["name"], 13, 600))
+        size = it.get("size")
+        if size:
+            nl.addWidget(_dlg_text(f"{size:g} {it.get('measure') or ''}".strip(),
+                                   11, 500, DLG_MUTED, wrap=False))
+        grid.addWidget(name_box, row, 0)
+        grid.addWidget(_dlg_text(f"×{it['quantity']}", 13, 600, DLG_MUTED, wrap=False, align=center), row, 1)
+        grid.addWidget(_dlg_text(f"₱{it[price_key]:,.2f}", 13, 500, DLG_MUTED, wrap=False, align=right), row, 2)
+        grid.addWidget(_dlg_text(f"₱{it['subtotal']:,.2f}", 13, 700, DLG_INK, wrap=False, align=right), row, 3)
+        row += 1
+    return grid
+
+
+def _dlg_totals(total_qty, total_amount):
+    strip = QFrame()
+    strip.setObjectName("dlgTotals")
+    strip.setStyleSheet("QFrame#dlgTotals { background: #FFF8E6; border: 1px solid #F0E1B5; border-radius: 10px; }")
+    lay = QHBoxLayout(strip)
+    lay.setContentsMargins(14, 10, 14, 10)
+    left = QVBoxLayout()
+    left.setSpacing(1)
+    left.addWidget(_dlg_text("TOTAL QUANTITY", 10, 700, DLG_MUTED, wrap=False))
+    left.addWidget(_dlg_text(f"{total_qty} pcs", 13, 700, wrap=False))
+    right = QVBoxLayout()
+    right.setSpacing(1)
+    right.addWidget(_dlg_text("TOTAL AMOUNT", 10, 700, DLG_MUTED, wrap=False,
+                              align=Qt.AlignmentFlag.AlignRight))
+    right.addWidget(_dlg_text(f"₱{total_amount:,.2f}", 20, 800, DLG_GOLD, wrap=False,
+                              align=Qt.AlignmentFlag.AlignRight))
+    lay.addLayout(left)
+    lay.addStretch()
+    lay.addLayout(right)
+    return strip
+
+
+class _DetailDialog(QDialog):
+    """Shared shell: header (title + status), scrolling body of cards, footer buttons."""
+
+    def _build_shell(self, window_title, kicker, code, subtitle, status):
+        self.setWindowTitle(window_title)
+        self.setFixedWidth(580)
+        self.setMinimumHeight(520)
+        self.resize(580, 700)
+        self.setStyleSheet(f"QDialog {{ background: {DLG_BG}; }}")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ---- header ----
+        header = QFrame()
+        header.setObjectName("dlgHeader")
+        header.setStyleSheet(
+            f"QFrame#dlgHeader {{ background: #FFFFFF; border: none; "
+            f"border-bottom: 1px solid {DLG_CARD_BORDER}; }}"
+        )
+        h = QHBoxLayout(header)
+        h.setContentsMargins(24, 18, 24, 16)
+        titles = QVBoxLayout()
+        titles.setSpacing(2)
+        titles.addWidget(_dlg_text(kicker.upper(), 10, 800, DLG_MUTED, wrap=False))
+        titles.addWidget(_dlg_text(code, 24, 800, wrap=False))
+        titles.addWidget(_dlg_text(subtitle, 12, 500, DLG_MUTED, wrap=False))
+        h.addLayout(titles)
+        h.addStretch()
+        h.addWidget(status_badge(status), 0, Qt.AlignmentFlag.AlignTop)
+        outer.addWidget(header)
+
+        # ---- scrolling body ----
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(
+            f"QScrollArea {{ background: {DLG_BG}; border: none; }}"
+            "QScrollBar:vertical { background: transparent; width: 8px; margin: 4px 2px; }"
+            "QScrollBar::handle:vertical { background: #D9D0BC; border-radius: 3px; min-height: 30px; }"
+            "QScrollBar::handle:vertical:hover { background: #C09E3B; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+        )
+        inner = QWidget()
+        inner.setObjectName("dlgInner")
+        inner.setStyleSheet(f"QWidget#dlgInner {{ background: {DLG_BG}; }}")
+        self.body = QVBoxLayout(inner)
+        self.body.setContentsMargins(20, 18, 20, 18)
+        self.body.setSpacing(14)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
+
+        # ---- footer ----
+        footer = QFrame()
+        footer.setObjectName("dlgFooter")
+        footer.setStyleSheet(
+            f"QFrame#dlgFooter {{ background: #FFFFFF; border: none; "
+            f"border-top: 1px solid {DLG_CARD_BORDER}; }}"
+        )
+        self.footer = QHBoxLayout(footer)
+        self.footer.setContentsMargins(20, 12, 20, 12)
+        self.footer.setSpacing(10)
+        self.footer.addStretch()
+        outer.addWidget(footer)
+
+    def _add_close_button(self):
+        close_btn = _dlg_button("Close")
+        close_btn.clicked.connect(self.reject)
+        self.footer.addWidget(close_btn)
+
+
+class OrderDetailDialog(_DetailDialog):
     """Read-only popup shown when a Customer Order is opened."""
 
     def __init__(self, parent, detail, on_refund=None):
         super().__init__(parent)
 
-        self.setWindowTitle(
-            f"Order Details - {detail['code']}"
-        )
-        self.setMinimumWidth(480)
-        self.setStyleSheet(
-            "background-color: #FFFFFF;"
+        self._build_shell(
+            f"Order Details - {detail['code']}", "Order details", detail["code"],
+            f"{detail['date']}  ·  {detail['platform']}", detail["status"],
         )
 
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("border: none;")
+        # ---- customer & order ----
+        card, lay = _dlg_card("Order information")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(14)
+        grid.addWidget(_dlg_field("Customer", detail["customer"]), 0, 0)
+        grid.addWidget(_dlg_field("Contact", detail["contact"]), 0, 1)
+        grid.addWidget(_dlg_field("Platform", detail["platform"]), 1, 0)
+        grid.addWidget(_dlg_field("Processed by", detail["processed_by"]), 1, 1)
+        grid.addWidget(_dlg_field("Date & time", detail["date"]), 2, 0)
+        grid.addWidget(_dlg_field("Delivery address", detail["delivery_address"]), 3, 0, 1, 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        lay.addLayout(grid)
+        self.body.addWidget(card)
 
-        inner = QWidget()
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
+        # ---- items ----
+        card, lay = _dlg_card("Products purchased")
+        lay.addLayout(_dlg_items_table(detail["items"], "unit_price", "Price"))
+        lay.addWidget(_dlg_totals(detail["total_quantity"], detail["total_amount"]))
+        self.body.addWidget(card)
 
-        def section(title):
-            lbl = QLabel(title)
-            lbl.setStyleSheet(
-                f"""
-                font-size: 13px;
-                font-weight: bold;
-                color: #C09E3B;
-                {LABEL_RESET}
-                """
-            )
-            layout.addWidget(lbl)
+        # ---- payment ----
+        card, lay = _dlg_card("Payment information")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(14)
+        grid.addWidget(_dlg_field("Mode of payment", detail["payment_method"]), 0, 0)
+        pay_box = QWidget()
+        pay_box.setStyleSheet(LABEL_RESET)
+        pl = QVBoxLayout(pay_box)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(4)
+        pl.addWidget(_dlg_text("PAYMENT STATUS", 10, 700, DLG_MUTED, wrap=False))
+        pill_row = QHBoxLayout()
+        pill_row.setContentsMargins(0, 0, 0, 0)
+        pill_row.addWidget(status_badge(detail["payment_status"]))
+        pill_row.addStretch()
+        pl.addLayout(pill_row)
+        grid.addWidget(pay_box, 0, 1)
+        grid.addWidget(_dlg_field("Reference no.", detail["payment_reference"]), 1, 0, 1, 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        lay.addLayout(grid)
+        self.body.addWidget(card)
+        self.body.addStretch(1)
 
-        def row(label, value):
-            r = QHBoxLayout()
-
-            l1 = QLabel(label)
-            l1.setStyleSheet(
-                f"""
-                color: #888888;
-                font-size: 12px;
-                {LABEL_RESET}
-                """
-            )
-
-            l2 = QLabel(str(value))
-            l2.setStyleSheet(
-                f"""
-                color: #2A2421;
-                font-size: 12px;
-                font-weight: 600;
-                {LABEL_RESET}
-                """
-            )
-
-            l2.setAlignment(
-                Qt.AlignmentFlag.AlignRight
-            )
-
-            r.addWidget(l1)
-            r.addWidget(l2)
-            layout.addLayout(r)
-
-        title_lbl = QLabel(detail["code"])
-        title_lbl.setStyleSheet(
-            f"""
-            font-size: 18px;
-            font-weight: bold;
-            color: #2A2421;
-            {LABEL_RESET}
-            """
-        )
-        layout.addWidget(title_lbl)
-
-        badge_layout = QHBoxLayout()
-        badge_layout.addWidget(
-            status_badge(detail["status"])
-        )
-        badge_layout.addStretch()
-        layout.addLayout(badge_layout)
-
-        section("Order Information")
-
-        row("Customer", detail["customer"])
-        row("Contact", detail["contact"])
-        row("Platform", detail["platform"])
-        row("Date & Time", detail["date"])
-        row("Processed By", detail["processed_by"])
-        row("Delivery Address", detail["delivery_address"])
-
-        section("Products Purchased")
-
-        for it in detail["items"]:
-            row(
-                f"{it['name']} (x{it['quantity']})",
-                f"₱{it['unit_price']:,.2f} each = "
-                f"₱{it['subtotal']:,.2f}"
-            )
-
-        row(
-            "Total Quantity",
-            detail["total_quantity"]
-        )
-        row(
-            "Total Amount",
-            f"₱{detail['total_amount']:,.2f}"
-        )
-
-        section("Payment Information")
-
-        row(
-            "Mode of Payment",
-            detail["payment_method"]
-        )
-        row(
-            "Payment Status",
-            detail["payment_status"]
-        )
-        row(
-            "Reference No.",
-            detail["payment_reference"]
-        )
-
-        if (
-            detail["status"] == "Completed"
-            and on_refund
-        ):
-            refund_btn = QPushButton(
-                "Process Refund"
-            )
-
-            refund_btn.setCursor(
-                Qt.CursorShape.PointingHandCursor
-            )
-
-            refund_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #A31E1E;
-                    color: white;
-                    border: none;
-                    border-radius: 6px;
-                    padding: 10px;
-                    font-weight: bold;
-                    font-size: 13px;
-                }
-                QPushButton:hover {
-                    background-color: #8B1919;
-                }
-            """)
+        # ---- footer buttons ----
+        if detail["status"] == "Completed" and on_refund:
+            refund_btn = _dlg_button("Process Refund", danger=True)
 
             def confirm_refund():
                 reply = QMessageBox.question(
                     self,
                     "Confirm Refund",
-                    f"Are you sure you want to refund "
-                    f"{detail['code']}?\n\n"
-                    "This will permanently mark the order as "
-                    "Refunded and return the items to your "
-                    "active inventory.",
-                    QMessageBox.StandardButton.Yes
-                    | QMessageBox.StandardButton.No,
+                    f"Are you sure you want to refund {detail['code']}?\n\n"
+                    "This will permanently mark the order as Refunded and return "
+                    "the items to your active inventory.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
-
-                if (
-                    reply ==
-                    QMessageBox.StandardButton.Yes
-                ):
+                if reply == QMessageBox.StandardButton.Yes:
                     on_refund(detail["id"])
                     self.accept()
 
-            refund_btn.clicked.connect(
-                confirm_refund
-            )
-
-            btn_layout = QHBoxLayout()
-            btn_layout.addStretch()
-            btn_layout.addWidget(refund_btn)
-            layout.addLayout(btn_layout)
-
-        scroll.setWidget(inner)
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
+            refund_btn.clicked.connect(confirm_refund)
+            self.footer.insertWidget(0, refund_btn)
+        self._add_close_button()
 
 
-class PurchaseDetailDialog(QDialog):
+class PurchaseDetailDialog(_DetailDialog):
     """Read-only popup shown when an Inventory Purchase is opened."""
 
     def __init__(self, parent, detail):
         super().__init__(parent)
 
-        self.setWindowTitle(
-            f"Purchase Details - {detail['code']}"
-        )
-        self.setMinimumWidth(480)
-        self.setStyleSheet(
-            "background-color: #FFFFFF;"
+        self._build_shell(
+            f"Purchase Details - {detail['code']}", "Purchase details", detail["code"],
+            f"{detail['date']}  ·  {detail['supplier']}", detail["status"],
         )
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
+        card, lay = _dlg_card("Purchase information")
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(14)
+        grid.addWidget(_dlg_field("Supplier", detail["supplier"]), 0, 0)
+        grid.addWidget(_dlg_field("Expected delivery", detail["expected_delivery"]), 0, 1)
+        grid.addWidget(_dlg_field("Date ordered", detail["date"]), 1, 0)
+        grid.addWidget(_dlg_field("Processed by", detail["processed_by"]), 1, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        lay.addLayout(grid)
+        self.body.addWidget(card)
 
-        def row(label, value):
-            r = QHBoxLayout()
+        card, lay = _dlg_card("Products")
+        lay.addLayout(_dlg_items_table(detail["items"], "unit_cost", "Unit cost"))
+        lay.addWidget(_dlg_totals(detail["total_quantity"], detail["total_amount"]))
+        self.body.addWidget(card)
+        self.body.addStretch(1)
 
-            l1 = QLabel(label)
-            l1.setStyleSheet(
-                f"""
-                color: #888888;
-                font-size: 12px;
-                {LABEL_RESET}
-                """
-            )
-
-            l2 = QLabel(str(value))
-            l2.setStyleSheet(
-                f"""
-                color: #2A2421;
-                font-size: 12px;
-                font-weight: 600;
-                {LABEL_RESET}
-                """
-            )
-
-            l2.setAlignment(
-                Qt.AlignmentFlag.AlignRight
-            )
-
-            r.addWidget(l1)
-            r.addWidget(l2)
-            layout.addLayout(r)
-
-        title_lbl = QLabel(detail["code"])
-        title_lbl.setStyleSheet(
-            f"""
-            font-size: 18px;
-            font-weight: bold;
-            color: #2A2421;
-            {LABEL_RESET}
-            """
-        )
-
-        layout.addWidget(title_lbl)
-
-        layout.addWidget(
-            status_badge(detail["status"])
-        )
-
-        row("Supplier", detail["supplier"])
-        row("Date", detail["date"])
-        row(
-            "Expected Delivery",
-            detail["expected_delivery"]
-        )
-        row(
-            "Processed By",
-            detail["processed_by"]
-        )
-
-        sec = QLabel("Products")
-        sec.setStyleSheet(
-            f"""
-            font-size: 13px;
-            font-weight: bold;
-            color: #C09E3B;
-            {LABEL_RESET}
-            """
-        )
-
-        layout.addWidget(sec)
-
-        for it in detail["items"]:
-            row(
-                f"{it['name']} (x{it['quantity']})",
-                f"₱{it['unit_cost']:,.2f} each = "
-                f"₱{it['subtotal']:,.2f}"
-            )
-
-        row(
-            "Total Quantity",
-            detail["total_quantity"]
-        )
-
-        row(
-            "Total Amount",
-            f"₱{detail['total_amount']:,.2f}"
-        )
+        self._add_close_button()

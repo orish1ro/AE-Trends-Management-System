@@ -7,6 +7,8 @@ from views.purchase_orders_view import PurchaseOrdersView
 from views.order_status_view import OrderStatusView
 from views.reports_view import ReportsView
 from views.transaction_history_view import TransactionHistoryView
+from views.responsive import fit_window, ResponsivePage
+from views.nav_icons import nav_icon, ICON_SIZE
 
 SIDEBAR_BG = "#241E1C"
 SIDEBAR_HOVER = "#312A27"
@@ -21,7 +23,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AE Trends - Retail POS & Inventory")
-        self.resize(1360, 840)
+        fit_window(self, 1360, 840, min_w=1000, min_h=600)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -65,19 +67,19 @@ class MainWindow(QMainWindow):
         self.nav_btns = []
         sections = [
             ("MAIN", [
-                ("Dashboard", 0),
+                ("Dashboard", 0, "dashboard"),
             ]),
             ("SALES", [
-                ("New Transaction", 1),
-                ("Orders", 4),
+                ("New Transaction", 1, "new_transaction"),
+                ("Orders", 4, "orders"),
             ]),
             ("INVENTORY", [
-                ("Products", 2),
-                ("Purchase Orders", 3),
+                ("Products", 2, "products"),
+                ("Purchase Orders", 3, "purchase_orders"),
             ]),
             ("REPORTS", [
-                ("Transactions", 5),
-                ("Reports", 6),
+                ("Transactions", 5, "transactions"),
+                ("Reports", 6, "reports"),
             ]),
         ]
 
@@ -88,8 +90,10 @@ class MainWindow(QMainWindow):
                 f"letter-spacing: 1px; margin: {14 if i else 0}px 8px 6px 8px;"
             )
             layout.addWidget(section_lbl)
-            for text, index in items:
+            for text, index, icon_name in items:
                 btn = QPushButton(text)
+                btn.setIcon(nav_icon(icon_name, SIDEBAR_TEXT, "#FFFFFF", "#FFFFFF"))
+                btn.setIconSize(ICON_SIZE)
                 btn.setCheckable(True)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setStyleSheet(f"""
@@ -173,13 +177,12 @@ class MainWindow(QMainWindow):
         self.transaction_history_view = TransactionHistoryView()
         self.reports_view = ReportsView()
 
-        self.stacked_widget.addWidget(self.dashboard_view)
-        self.stacked_widget.addWidget(self.record_tx_view)
-        self.stacked_widget.addWidget(self.inventory_view)
-        self.stacked_widget.addWidget(self.purchase_orders_view)
-        self.stacked_widget.addWidget(self.order_status_view)
-        self.stacked_widget.addWidget(self.transaction_history_view)
-        self.stacked_widget.addWidget(self.reports_view)
+        # Each page is wrapped so it scrolls on small screens instead of being
+        # cut off, and is centred / width-capped on very large screens.
+        for view in (self.dashboard_view, self.record_tx_view, self.inventory_view,
+                     self.purchase_orders_view, self.order_status_view,
+                     self.transaction_history_view, self.reports_view):
+            self.stacked_widget.addWidget(ResponsivePage(view))
 
         self.dashboard_view.new_transaction_requested.connect(lambda: self.switch_view(1))
         self.dashboard_view.inventory_requested.connect(lambda: self.switch_view(2))

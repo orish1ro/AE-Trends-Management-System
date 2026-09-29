@@ -20,12 +20,19 @@ class InventoryController:
         self.view.status_filter.currentTextChanged.connect(self.load_products)
         self.view.add_product_btn.clicked.connect(self.open_add_product_dialog)
         self.view.edit_product_requested.connect(self.open_edit_product_dialog)
+        self.view.restore_product_requested.connect(self.restore_product)
+        self.view.archive_product_requested.connect(lambda product: self.archive_product(product))
 
     def load_products(self):
         search = self.view.search_input.text().strip()
         category = self.view.category_filter.currentText()
         status = self.view.status_filter.currentText()
-        products = self.model.get_all_products(search, category, status)
+        archived = (status == "Archived")
+        self.view.showing_archived = archived
+        if archived:
+            products = self.model.get_all_products(search, category, "All", archived=True)
+        else:
+            products = self.model.get_all_products(search, category, status)
         self.view.display_products(products)
         self._refresh_summary()
 
@@ -72,7 +79,20 @@ class InventoryController:
             except Exception:
                 po_items = []  # dropdown is a convenience, never block the dialog over it
 
-        dialog = ProductDialog(self.view, product=product, po_items=po_items)
+        try:
+            existing_products = self.model.get_all_products()
+        except Exception:
+            existing_products = []  # the side list is a convenience, never block the dialog over it
+
+        suppliers = []
+        if self.po_model:
+            try:
+                suppliers = [s["name"] for s in self.po_model.get_all_suppliers()]
+            except Exception:
+                suppliers = []  # the supplier list is a convenience too
+
+        dialog = ProductDialog(self.view, product=product, po_items=po_items,
+                               existing_products=existing_products, suppliers=suppliers)
 
         def find_existing_by_name(name):
             for p in self.model.get_all_products():
@@ -81,13 +101,15 @@ class InventoryController:
             return None
 
         def on_po_item_picked(item):
-            # If a product with this exact name already exists (e.g. it
-            # was auto-created the moment its Purchase Order was placed),
-            # bind the dialog to that record instead of letting Save
-            # create a duplicate row for the same product.
+            # If a product with this exact name already exists, bind the
+            # dialog to that record instead of letting Save create a
+            # duplicate row for the same product. Only Received purchase
+            # orders can be picked, and receiving a PO already added its
+            # quantity to the stock, so the stock is NOT increased again here.
             existing = find_existing_by_name(item.get("product_name", ""))
             if existing:
                 dialog.bind_to_existing_product(existing)
+                dialog.note_stock_already_counted(item.get("quantity", 0), item.get("po_number", ""))
 
         dialog.po_item_selected.connect(on_po_item_picked)
 
@@ -121,9 +143,11 @@ class InventoryController:
                         target = existing
 
                 if target.get("id") is not None:
-                    self.model.update_product(target["id"], name, target.get("sku", ""), cat, price, stock, reorder, exp, image_value)
+                    self.model.update_product(target["id"], name, target.get("sku", ""), cat, price, stock, reorder, exp, image_value,
+                                              supplier=values.get("supplier", ""))
                 else:
-                    self.model.add_product(name, cat, price, stock, reorder, exp, image_path=image_value)
+                    self.model.add_product(name, cat, price, stock, reorder, exp, sku=values.get("sku", ""), image_path=image_value,
+                                           supplier=values.get("supplier", ""))
                 dialog.accept()
                 self._notify_change()
             except ValueError as e:
@@ -131,19 +155,72 @@ class InventoryController:
             except Exception as error:
                 QMessageBox.critical(dialog, "Save Failed", f"Unable to save product: {error}")
 
+        def archive():
+            target = dict(dialog.product)
+            if target.get("id") is None:
+                return
+            if self.archive_product(target, parent=dialog):
+                dialog.accept()
+
+        dialog.archive_requested.connect(archive)
         dialog.save_btn.clicked.connect(save)
         dialog.exec()
         self.is_edit_modal_open = False
         self.selected_product = None
 
-    def archive_product(self, product):
+    def archive_product(self, product, parent=None):
+        """Hides a product from Inventory / New Transaction / Purchase Orders
+        without deleting it, so old orders and reports stay correct.
+        Returns True when it was archived."""
+        parent = parent or self.view
+        try:
+            open_orders = self.model.count_open_orders_for_product(product["id"])
+        except Exception:
+            open_orders = 0
+        if open_orders:
+            QMessageBox.warning(
+                parent, "Cannot Archive",
+                f"{product['name']} is in {open_orders} order(s) that are not finished yet "
+                "(Pending, Paid, Prepared or Shipped).\n\n"
+                "Complete or cancel those orders in Order Status first, then archive it.")
+            return False
+
+        stock = product.get("stock_qty") or 0
+        note = ""
+        if stock > 0:
+            note = (f"\n\nIt still has {stock} in stock. That stock will be hidden "
+                    "until you restore the product.")
         answer = QMessageBox.question(
-            self.view, "Archive Product", f"Archive {product['name']}?",
+            parent, "Archive Product",
+            f"Archive {product['name']}?\n\n"
+            "It will be hidden from Inventory, New Transaction and Purchase Orders. "
+            "Past orders and reports are not affected, and you can restore it "
+            "anytime from Inventory > Status: Archived." + note,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        try:
+            self.model.archive_product(product["id"])
+        except Exception as error:
+            QMessageBox.critical(parent, "Archive Failed", str(error))
+            return False
+        self._notify_change()
+        return True
+
+    def restore_product(self, product):
+        answer = QMessageBox.question(
+            self.view, "Restore Product",
+            f"Restore {product['name']}?\n\nIt will show up again in Inventory, "
+            "New Transaction and Purchase Orders.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
-        if answer == QMessageBox.StandardButton.Yes:
-            try:
-                self.model.archive_product(product["id"])
-                self.load_products()
-            except Exception as error:
-                QMessageBox.critical(self.view, "Archive Failed", str(error))
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.model.restore_product(product["id"])
+        except Exception as error:
+            QMessageBox.critical(self.view, "Restore Failed", str(error))
+            return
+        self._notify_change()

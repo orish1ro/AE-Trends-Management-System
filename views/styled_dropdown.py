@@ -1,88 +1,215 @@
-from PyQt6.QtCore import QPoint, QTimer, Qt
-from PyQt6.QtGui import QColor, QPainter, QPalette
-from PyQt6.QtWidgets import QComboBox, QFrame, QListView, QGraphicsDropShadowEffect
+from PyQt6.QtCore import Qt, QByteArray, QRectF, QPoint
+from PyQt6.QtGui import QColor, QFont, QPainter, QPalette
+from PyQt6.QtWidgets import QComboBox, QListView
 from PyQt6.QtSvg import QSvgRenderer
-from PyQt6.QtCore import QByteArray, QRectF
+
 
 ITEM_TEXT_COLOR = "#2A2421"
+BORDER_COLOR = "#D6CEBC"
+ACCENT_COLOR = "#C09E3B"
+POPUP_BG = "#FFFDFB"
+HOVER_BG = "#F5E8C4"
+SELECTED_BG = "#FFF2C8"
+SELECTED_TEXT = "#6D5A27"
 
 
 class StyledComboBox(QComboBox):
-    """Shared AE Trends dropdown with a fixed downward popup and theme styling."""
+    """Global AE Trends dropdown.
 
-    def __init__(self, parent=None):
+    Uses Qt's normal combo-box popup instead of creating/repositioning a
+    separate top-level window. This keeps mouse clicks, wheel scrolling,
+    keyboard navigation and popup dismissal reliable while still providing
+    the AE Trends visual style.
+    """
+
+    def __init__(self, parent=None, compact=False):
         super().__init__(parent)
-        self.setView(QListView())
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedHeight(34)
-        self.setMaxVisibleItems(5)
-        self.setStyleSheet(self._style())
+        self._compact = compact
 
-        # Belt-and-suspenders: force the text color via QPalette too, since
-        # the popup view is re-parented into its own top-level frame in
-        # _move_popup_down and can otherwise fall back to a platform
-        # default (item text rendering as native link-blue instead of the
-        # theme's warm dark brown).
-        pal = self.palette()
-        pal.setColor(QPalette.ColorRole.Text, QColor(ITEM_TEXT_COLOR))
-        pal.setColor(QPalette.ColorRole.ButtonText, QColor(ITEM_TEXT_COLOR))
-        self.setPalette(pal)
+        view = QListView()
+        view.setUniformItemSizes(True)
+        view.setSelectionMode(QListView.SelectionMode.SingleSelection)
+        view.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        view.setMouseTracking(True)
+        self.setView(view)
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(34 if compact else 36)
+        self.setMaxVisibleItems(6 if compact else 7)
+        self.setStyleSheet(self._style(compact))
+        self._base_font_size = 10.5
+        self._min_font_size = 10.5
+        f = QFont(self.font()); f.setPointSizeF(self._base_font_size); self.setFont(f)
+        self._update_text_font()
+        self.currentIndexChanged.connect(self._update_text_font)
+        self.model().rowsInserted.connect(self._fit_width)
+        self.model().modelReset.connect(self._fit_width)
+
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Text, QColor(ITEM_TEXT_COLOR))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(ITEM_TEXT_COLOR))
+        self.setPalette(palette)
 
         self._chevron = QSvgRenderer(QByteArray(b"""
             <svg width="12" height="8" viewBox="0 0 12 8" xmlns="http://www.w3.org/2000/svg">
-                <path d="M1 1.5L6 6.5L11 1.5" fill="none" stroke="#6D5A27" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M1 1.5L6 6.5L11 1.5"
+                      fill="none" stroke="#6D5A27" stroke-width="1.7"
+                      stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
         """))
 
     @staticmethod
-    def _style():
-        return """
-            QComboBox {
-                background: #FFFDFB;
-                color: #2A2421;
-                border: 1px solid #D6CEBC;
+    def _style(compact=False):
+        pad = "0 4px 0 8px" if compact else "0 4px 0 10px"
+        arrow_w = 28 if compact else 32
+        item_height = 30 if compact else 34
+        item_pad = "5px 10px" if compact else "7px 12px"
+
+        return f"""
+            QComboBox {{
+                background: {POPUP_BG};
+                color: {ITEM_TEXT_COLOR};
+                border: 1px solid {BORDER_COLOR};
                 border-radius: 8px;
-                padding: 0 36px 0 11px;
-                font-size: 12px;
-                selection-background-color: #FFF2C8;
-            }
-            QComboBox:hover { border-color: #C09E3B; }
-            QComboBox:focus { border: 1px solid #C09E3B; }
-            QComboBox::drop-down {
+                padding: {pad};
+                selection-background-color: {SELECTED_BG};
+                outline: none;
+            }}
+
+            QComboBox:hover {{
+                border-color: {ACCENT_COLOR};
+                background: #FFFFFF;
+            }}
+
+            QComboBox:focus {{
+                border: 1px solid {ACCENT_COLOR};
+                background: #FFFFFF;
+            }}
+
+            QComboBox::drop-down {{
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
-                width: 30px;
+                width: {arrow_w}px;
                 background: #F6EEDC;
                 border: none;
-                border-left: 1px solid #D6CEBC;
+                border-left: 1px solid {BORDER_COLOR};
                 border-top-right-radius: 7px;
                 border-bottom-right-radius: 7px;
-            }
-            QComboBox::down-arrow { width: 0; height: 0; image: none; }
-            QComboBox QAbstractItemView {
-                background: #FFFDFB;
-                color: #2A2421;
-                border: 1px solid #D6CEBC;
-                border-radius: 10px;
+            }}
+
+            QComboBox QAbstractItemView {{
+                background: {POPUP_BG};
+                color: {ITEM_TEXT_COLOR};
+                border: 1px solid {BORDER_COLOR};
+                border-radius: 8px;
                 outline: none;
-                padding: 5px;
-                selection-background-color: #FFF2C8;
-                selection-color: #6D5A27;
-            }
-            QComboBox QAbstractItemView::item {
-                min-height: 28px;
-                padding: 10px 16px;
+                padding: 4px;
+                selection-background-color: {SELECTED_BG};
+                selection-color: {SELECTED_TEXT};
+            }}
+
+            QComboBox QAbstractItemView::item {{
+                min-height: {item_height}px;
+                padding: {item_pad};
                 border-radius: 6px;
-            }
-            QComboBox QAbstractItemView::item:hover { background: #F5E8C4; }
-            QComboBox QAbstractItemView::item:selected { background: #FFF2C8; color: #6D5A27; }
+                color: {ITEM_TEXT_COLOR};
+            }}
+
+            QComboBox QAbstractItemView::item:hover {{
+                background: {HOVER_BG};
+                color: {ITEM_TEXT_COLOR};
+            }}
+
+            QComboBox QAbstractItemView::item:selected {{
+                background: {SELECTED_BG};
+                color: {SELECTED_TEXT};
+            }}
+
+            QComboBox QAbstractItemView QScrollBar:vertical {{
+                width: 7px;
+                margin: 4px 2px 4px 0;
+                background: transparent;
+                border: none;
+            }}
+
+            QComboBox QAbstractItemView QScrollBar::handle:vertical {{
+                background: #CFC5AF;
+                min-height: 28px;
+                border-radius: 3px;
+            }}
+
+            QComboBox QAbstractItemView QScrollBar::handle:vertical:hover {{
+                background: #B9AA8D;
+            }}
+
+            QComboBox QAbstractItemView QScrollBar::add-line:vertical,
+            QComboBox QAbstractItemView QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+
+            QComboBox QAbstractItemView QScrollBar::add-page:vertical,
+            QComboBox QAbstractItemView QScrollBar::sub-page:vertical {{
+                background: transparent;
+            }}
         """
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+    def _update_text_font(self, *_):
+        """Kept for compatibility. Text is no longer shrunk; the widget is
+        widened to fit instead (see _fit_width)."""
+        self._fit_width()
+
+    def _needed_width(self):
+        """Width required to show the longest item completely."""
+        fm = self.fontMetrics()
+        model = self.model()
+        longest = 0
+        if model is not None:
+            for row in range(model.rowCount()):
+                text = model.data(model.index(row, 0), Qt.ItemDataRole.DisplayRole)
+                if text is not None:
+                    longest = max(longest, fm.horizontalAdvance(str(text)))
+        longest = max(longest, fm.horizontalAdvance(self.currentText() or ""))
+        pad_left, pad_right = (8, 4) if self._compact else (10, 4)
+        arrow_w = 28 if self._compact else 32
+        # text + paddings + arrow button + border + a little breathing room
+        return longest + pad_left + pad_right + arrow_w + 2 + 12
+
+    def _fit_width(self, *_):
+        """Never let a fixed/minimum width clip the text: widen if needed."""
+        if getattr(self, "_fitting", False):
+            return
+        self._fitting = True
+        try:
+            need = self._needed_width()
+            if self.minimumWidth() < need:
+                fixed = self.minimumWidth() == self.maximumWidth()
+                self.setMinimumWidth(need)
+                if fixed or self.maximumWidth() < need:
+                    self.setMaximumWidth(need)
+        finally:
+            self._fitting = False
+
+    def showEvent(self, event):
+        self._fit_width()
+        super().showEvent(event)
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        hint.setWidth(max(hint.width(), self._needed_width()))
+        return hint
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        hint.setWidth(max(hint.width(), self._needed_width()))
+        return hint
 
     def setEditable(self, editable):
         super().setEditable(editable)
-        # QComboBox's own stylesheet doesn't reach the internal QLineEdit
-        # once editable, so it can render with a platform-default (bluish)
-        # text color; style it directly so it matches the rest of the app.
         if editable and self.lineEdit() is not None:
             self.lineEdit().setStyleSheet(
                 f"background: transparent; border: none; "
@@ -93,67 +220,63 @@ class StyledComboBox(QComboBox):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._chevron.render(painter, QRectF(self.width() - 25, (self.height() - 8) / 2, 12, 8))
+        x = self.width() - (20 if self._compact else 22)
+        y = (self.height() - 8) / 2
+        self._chevron.render(painter, QRectF(x, y, 12, 8))
+
+    def _popup_width(self):
+        """Return a width that fits the longest item without clipping text."""
+        view = self.view()
+        model = self.model()
+        if model is None or model.rowCount() == 0:
+            return max(self.width(), 180)
+
+        fm = view.fontMetrics()
+        longest = 0
+        for row in range(model.rowCount()):
+            text = model.data(model.index(row, 0), Qt.ItemDataRole.DisplayRole)
+            if text is not None:
+                longest = max(longest, fm.horizontalAdvance(str(text)))
+
+        # Text + item padding + popup padding + scrollbar breathing room.
+        content_width = longest + 34 + 14
+        return max(self.width(), 180, content_width)
 
     def showPopup(self):
-        popup_view = self.view()
-        popup_view.setMinimumWidth(self.width())
-        popup_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        popup_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        popup_view.setFrameShape(QFrame.Shape.NoFrame)
-        super().showPopup()
-        QTimer.singleShot(0, self._move_popup_down)
+        """Use Qt's native popup, then make it wide enough and anchor it cleanly."""
+        view = self.view()
+        view.setMinimumWidth(self._popup_width())
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-    def _move_popup_down(self):
-        popup = self.view().window()
-        popup.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        popup.setObjectName("styledDropdownPopup")
-        # NOTE: once the view's window becomes this frameless popup frame,
-        # it's no longer inside the combobox's own widget chain, so the
-        # combobox's "QComboBox QAbstractItemView" rules stop applying.
-        # Re-declare the item styling here directly against QListView so
-        # every row keeps the theme's dark-brown text instead of falling
-        # back to a platform default.
-        popup.setStyleSheet(f"""
-            QFrame#styledDropdownPopup {{
-                background: #FFFDFB;
-                border: 1px solid #D6CEBC;
-                border-radius: 10px;
-            }}
-            QListView {{
-                background: #FFFDFB;
-                color: {ITEM_TEXT_COLOR};
-                border: none;
-                outline: none;
-                padding: 5px;
-            }}
-            QListView::item {{
-                min-height: 28px;
-                padding: 10px 16px;
-                border-radius: 6px;
-                color: {ITEM_TEXT_COLOR};
-            }}
-            QListView::item:hover {{
-                background: #F5E8C4;
-                color: {ITEM_TEXT_COLOR};
-            }}
-            QListView::item:selected {{
-                background: #FFF2C8;
-                color: #6D5A27;
-            }}
-        """)
-        popup_view = self.view()
-        pal = popup_view.palette()
-        pal.setColor(QPalette.ColorRole.Text, QColor(ITEM_TEXT_COLOR))
-        popup_view.setPalette(pal)
-        row_height = max(30, popup_view.sizeHintForRow(0)) if self.count() else 30
-        popup.setFixedHeight(self.count() * row_height + 10)
-        shadow = QGraphicsDropShadowEffect(popup)
-        shadow.setBlurRadius(16)
-        shadow.setOffset(0, 4)
-        shadow.setColor(QColor(0, 0, 0, 20))
-        popup.setGraphicsEffect(shadow)
-        popup.show()
-        popup.move(self.mapToGlobal(QPoint(0, self.height() + 4)))
-        popup.raise_()
+        super().showPopup()
+
+        popup = view.window()
+        if popup is None:
+            return
+
+        # Keep the popup visually anchored to the combo box instead of allowing
+        # Qt's wider popup to appear noticeably offset from the field.
+        global_pos = self.mapToGlobal(QPoint(0, self.height()))
+        width = max(popup.width(), self._popup_width())
+        height = popup.height()
+
+        screen = self.screen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            x = global_pos.x()
+            y = global_pos.y()
+
+            # Keep the full popup on-screen horizontally.
+            if x + width > available.right() + 1:
+                x = max(available.left(), available.right() - width + 1)
+
+            # Prefer below; open above only when there is not enough room.
+            if y + height > available.bottom() + 1:
+                above_y = self.mapToGlobal(QPoint(0, 0)).y() - height
+                if above_y >= available.top():
+                    y = above_y
+
+            popup.setGeometry(x, y, width, height)
+        else:
+            popup.setGeometry(global_pos.x(), global_pos.y(), width, height)

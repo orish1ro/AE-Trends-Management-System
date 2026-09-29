@@ -92,8 +92,17 @@ class TransactionController:
                 self.record_view.show_form_error("Amount paid must cover the transaction total.")
                 return
 
-            if is_online and payment["method"] != "Cash" and not payment["reference_number"]:
-                self.record_view.show_form_error("Reference number is required for electronic payments.")
+            # OLD (both optional for walk-in; reference required for online orders):
+            # if is_online and payment["method"] != "Cash" and not payment["reference_number"]:
+            #     self.record_view.show_form_error("Reference number is required for electronic payments.")
+            #     return
+            # NEW: for GCash / Online Banking (walk-in or online), at least ONE of
+            # the reference number or the receipt image must be provided.
+            if (payment["method"] != "Cash"
+                    and not payment["reference_number"]
+                    and not payment["receipt_image"]):
+                self.record_view.show_form_error(
+                    "Please enter a reference number or upload a receipt image.")
                 return
 
             order_code = self.txn_model.create_order(
@@ -172,6 +181,7 @@ class TransactionController:
             )
 
             self.load_orders()
+            self.load_catalog()   # cancelled items are back in stock
 
         if self.on_order_saved:
             self.on_order_saved()

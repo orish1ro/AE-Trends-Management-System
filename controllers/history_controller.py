@@ -1,17 +1,20 @@
 """CONTROLLER: Transaction History."""
+from PyQt6.QtWidgets import QMessageBox
 from views.transaction_history_view import OrderDetailDialog, PurchaseDetailDialog
 
 
 class HistoryController:
-    def __init__(self, model, view):
+    def __init__(self, model, view, generated_by=None):
         self.model = model
         self.view = view
+        self.generated_by = generated_by
         
         self.view.populate_filter_options(self.model.get_filter_options())
 
         self.view.filters_changed.connect(self.load)
         self.view.view_requested.connect(self.open_detail)
         self.view.page_changed.connect(self.change_page)
+        self.view.export_pdf_requested.connect(self.export_pdf)
 
         self.current_rows = []
         self.current_tab = "All Transactions"
@@ -60,6 +63,37 @@ class HistoryController:
         self.view.display_transactions(rows[start:end], tab)
         self.view.set_pagination(len(rows), self.current_page)
         self.view.update_summary(self.model.get_summary(f["date_from"], f["date_to"]))
+
+    def export_pdf(self, path):
+        """Exports EVERY row matching the current filters/tab (not just the
+        page on screen), categorised by type and status."""
+        if not self.current_rows:
+            QMessageBox.information(
+                self.view, "Nothing to Export",
+                "There are no transactions matching the current filters.")
+            return
+        try:
+            from controllers.history_pdf import build_history_pdf
+            build_history_pdf(
+                path, self.current_rows, self.view.get_filters(),
+                tab=self.current_tab, generated_by=self.generated_by)
+        except ImportError:
+            QMessageBox.warning(
+                self.view, "PDF Export Unavailable",
+                "PDF export needs the 'reportlab' package.\n"
+                "Install it with: pip install reportlab")
+            return
+        except PermissionError:
+            QMessageBox.warning(
+                self.view, "Export Failed",
+                "Couldn't write the file. If it is open in another program, "
+                "close it and try again.")
+            return
+        except Exception as exc:  # noqa: BLE001 - show any failure to the user
+            QMessageBox.warning(self.view, "Export Failed", str(exc))
+            return
+        QMessageBox.information(
+            self.view, "Export Complete", f"Transaction history saved to:\n{path}")
 
     def change_page(self, direction):
         if not self.current_rows:

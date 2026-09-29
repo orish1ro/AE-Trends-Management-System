@@ -3,9 +3,11 @@ from PyQt6.QtWidgets import (
     QPushButton, QFrame, QTableWidget, QTableWidgetItem, QHeaderView,
     QDialog, QMessageBox, QScrollArea, QMenu, QSizePolicy, QButtonGroup
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QRegularExpression
+from PyQt6.QtGui import QRegularExpressionValidator
 from datetime import datetime
 from views.styled_dropdown import StyledComboBox
+from views.responsive import clamp_dialog_min
 
 
 # ---------------------------------------------------------------------------
@@ -82,15 +84,27 @@ GHOST_BTN_STYLE = f"""
 
 SupplierComboBox = StyledComboBox
 PAGE_SIZE = 5
+SIDE_PANEL_WIDTH = 740
 
 # Fixed pixel widths for the order-items row columns. Only PRODUCT stretches;
 # every other column (and the header above it) shares these exact widths so
 # rows and headers always line up and nothing needs a horizontal scrollbar.
-ITEM_COL_QTY_W = 40
-ITEM_COL_COST_W = 56
-ITEM_COL_TOTAL_W = 60
-ITEM_COL_DEL_W = 22
-ITEM_COL_SPACING = 5
+ITEM_COL_QTY_W = 56
+ITEM_COL_SIZE_W = 64
+ITEM_COL_UNIT_W = 96
+ITEM_COL_COST_W = 80
+ITEM_COL_TOTAL_W = 92
+ITEM_COL_DEL_W = 26
+ITEM_COL_SPACING = 6
+ITEM_ROW_H = 34
+
+# Measures offered for each product (size per piece, e.g. 100 ml, 2 kg).
+ITEM_UNITS = ["pcs", "ml", "L", "g", "kg", "oz", "box", "pack", "bottle"]
+
+ROW_FIELD_STYLE = (
+    f"padding: 0 6px; font-size: 13px; border: 1px solid {FIELD_BORDER}; "
+    "border-radius: 6px; background: white;"
+)
 
 
 def labeled_field(label_text, widget, required=False):
@@ -130,9 +144,23 @@ class PurchaseOrdersView(QWidget):
         root.setSpacing(0)
 
         root.addWidget(self._build_main_column(), 1)
-        root.addWidget(self._build_side_panel())
 
+        # The "New Purchase Order" panel floats over the right side of the page
+        # (instead of sitting in the layout) so it can never push the window
+        # wider than the screen.
+        self._build_side_panel().setParent(self)
         self.side_panel.setVisible(False)
+
+    def _position_side_panel(self):
+        panel = self.side_panel
+        margin = 16
+        width = min(SIDE_PANEL_WIDTH, max(self.width() - margin, 320))
+        panel.setGeometry(self.width() - width, 0, width, self.height())
+        panel.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_side_panel()
 
     # ------------------------------------------------------------------
     # Left column: header, toolbar, PO table, pagination, add-supplier card
@@ -427,7 +455,7 @@ class PurchaseOrdersView(QWidget):
     def _build_side_panel(self):
         panel = QFrame()
         panel.setObjectName("sidePanel")
-        panel.setFixedWidth(480)
+        panel.setMaximumWidth(SIDE_PANEL_WIDTH)
         panel.setStyleSheet(f"""
             QFrame#sidePanel {{
                 background: {CARD_BG};
@@ -536,6 +564,8 @@ class PurchaseOrdersView(QWidget):
         head_row.addWidget(prod_head, 1)
         for text, width in (
             ("QTY", ITEM_COL_QTY_W),
+            ("SIZE", ITEM_COL_SIZE_W),
+            ("MEASURE", ITEM_COL_UNIT_W),
             ("UNIT COST", ITEM_COL_COST_W),
             ("LINE TOTAL", ITEM_COL_TOTAL_W),
         ):
@@ -701,6 +731,8 @@ class PurchaseOrdersView(QWidget):
     # Side panel open/close + reset
     # ------------------------------------------------------------------
     def _set_side_panel_open(self, is_open):
+        if is_open:
+            self._position_side_panel()
         self.side_panel.setVisible(is_open)
         if not is_open:
             self._reset_order_form()
@@ -732,11 +764,11 @@ class PurchaseOrdersView(QWidget):
 
         prod_combo = StyledComboBox()
         prod_combo.setEditable(True)
-        prod_combo.setMinimumWidth(90)
+        prod_combo.setMinimumWidth(120)
         prod_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
-        prod_combo.addItem("Select Product...")
+        prod_combo.setFixedHeight(ITEM_ROW_H)
         for product in self.available_products:
             prod_combo.addItem(product["name"])
             stock = product.get("stock_qty", 0)
@@ -745,7 +777,11 @@ class PurchaseOrdersView(QWidget):
             prod_combo.setItemData(
                 prod_combo.count() - 1, tip, Qt.ItemDataRole.ToolTipRole
             )
-        prod_combo.lineEdit().setCursorPosition(0)
+        # Start empty with a grey placeholder (instead of a real
+        # "Select Product..." item) so you can just start typing without
+        # deleting anything first.
+        prod_combo.setCurrentIndex(-1)
+        prod_combo.lineEdit().setPlaceholderText("Select or type product...")
         # Editable QComboBox line edits show the text around the *cursor*,
         # so a name too long for the column renders its tail ("...oduct...")
         # instead of eliding at the end. Snap the cursor back to 0 whenever
@@ -755,17 +791,33 @@ class PurchaseOrdersView(QWidget):
             lambda _=0, c=prod_combo: c.lineEdit().setCursorPosition(0)
         )
 
+        int_rx = QRegularExpression(r"^\d*$")
+        num_rx = QRegularExpression(r"^\d*\.?\d*$")
+
         qty_input = QLineEdit()
         qty_input.setPlaceholderText("0")
-        qty_input.setFixedWidth(ITEM_COL_QTY_W)
+        qty_input.setFixedSize(ITEM_COL_QTY_W, ITEM_ROW_H)
         qty_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        qty_input.setStyleSheet(FIELD_STYLE)
+        qty_input.setStyleSheet(ROW_FIELD_STYLE)
+        qty_input.setValidator(QRegularExpressionValidator(int_rx, qty_input))
+
+        size_input = QLineEdit()
+        size_input.setPlaceholderText("e.g. 100")
+        size_input.setFixedSize(ITEM_COL_SIZE_W, ITEM_ROW_H)
+        size_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        size_input.setStyleSheet(ROW_FIELD_STYLE)
+        size_input.setValidator(QRegularExpressionValidator(num_rx, size_input))
+
+        unit_combo = StyledComboBox(compact=True)
+        unit_combo.addItems(ITEM_UNITS)
+        unit_combo.setFixedSize(ITEM_COL_UNIT_W, ITEM_ROW_H)
 
         cost_input = QLineEdit()
         cost_input.setPlaceholderText("0.00")
-        cost_input.setFixedWidth(ITEM_COL_COST_W)
+        cost_input.setFixedSize(ITEM_COL_COST_W, ITEM_ROW_H)
         cost_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        cost_input.setStyleSheet(FIELD_STYLE)
+        cost_input.setStyleSheet(ROW_FIELD_STYLE)
+        cost_input.setValidator(QRegularExpressionValidator(num_rx, cost_input))
 
         # Auto-fill the unit cost from the inventory price whenever the
         # person explicitly picks a product from the dropdown (not while
@@ -792,13 +844,16 @@ class PurchaseOrdersView(QWidget):
 
         row_layout.addWidget(prod_combo, 1)
         row_layout.addWidget(qty_input)
+        row_layout.addWidget(size_input)
+        row_layout.addWidget(unit_combo)
         row_layout.addWidget(cost_input)
         row_layout.addWidget(line_total_lbl)
         row_layout.addWidget(del_btn)
 
         row_data = {
             "widget": row_widget, "combo": prod_combo,
-            "qty": qty_input, "cost": cost_input, "line_lbl": line_total_lbl,
+            "qty": qty_input, "size": size_input, "unit": unit_combo,
+            "cost": cost_input, "line_lbl": line_total_lbl,
         }
 
         qty_input.textChanged.connect(self._recalculate_totals)
@@ -913,7 +968,7 @@ class PurchaseOrdersView(QWidget):
             items_to_order = []
             for row in self.item_rows:
                 prod_name = row["combo"].currentText().strip()
-                if prod_name == "Select Product..." or not prod_name:
+                if not prod_name:
                     continue
 
                 try:
@@ -937,8 +992,24 @@ class PurchaseOrdersView(QWidget):
                     )
                     return
 
+                size_text = row["size"].text().strip()
+                size = None
+                if size_text:
+                    try:
+                        size = float(size_text)
+                        if size <= 0:
+                            raise ValueError
+                    except ValueError:
+                        QMessageBox.warning(
+                            self, "Validation Error",
+                            f"Please enter a valid size greater than 0 for '{prod_name}' "
+                            "(or leave it blank)."
+                        )
+                        return
+
                 items_to_order.append({
                     "product": prod_name, "quantity": qty,
+                    "size": size, "unit": row["unit"].currentText(),
                     "unit_cost": cost, "line_total": qty * cost,
                 })
 
@@ -1122,7 +1193,7 @@ class PurchaseOrdersView(QWidget):
     def show_order_details(self, details):
         dialog = QDialog(self)
         dialog.setWindowTitle("Purchase Order Details")
-        dialog.setMinimumSize(760, 500)
+        clamp_dialog_min(dialog, 760, 500)
         dialog.setStyleSheet(f"background: {BG}; color: {TEXT_DARK2};")
 
         layout = QVBoxLayout(dialog)
@@ -1204,8 +1275,8 @@ class PurchaseOrdersView(QWidget):
         card_layout.addLayout(summary_row)
 
         items_table = QTableWidget()
-        items_table.setColumnCount(4)
-        items_table.setHorizontalHeaderLabels(["ITEM", "QTY", "UNIT COST", "LINE TOTAL"])
+        items_table.setColumnCount(5)
+        items_table.setHorizontalHeaderLabels(["ITEM", "QTY", "SIZE", "UNIT COST", "LINE TOTAL"])
         items_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         items_table.verticalHeader().setVisible(False)
         items_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -1234,14 +1305,16 @@ class PurchaseOrdersView(QWidget):
 
         items_table.setRowCount(len(details["items"]))
         for row, item in enumerate(details["items"]):
+            size = item.get("size")
+            size_text = f"{size:g} {item.get('measure') or ''}".strip() if size else "—"
             values = [
-                item["name"], str(item["quantity"]),
+                item["name"], str(item["quantity"]), size_text,
                 f"₱{item['unit_cost']:,.2f}", f"₱{item['line_total']:,.2f}",
             ]
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(value)
                 alignment = (
-                    Qt.AlignmentFlag.AlignRight if column in (1, 2, 3)
+                    Qt.AlignmentFlag.AlignRight if column in (1, 2, 3, 4)
                     else Qt.AlignmentFlag.AlignLeft
                 )
                 cell.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | alignment)

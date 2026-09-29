@@ -1,11 +1,48 @@
 import sys
 import ctypes
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QPalette, QColor
 from database.db_manager import DatabaseManager
 from views.login_view import LoginView
 from views.main_window import MainWindow
 from controllers.auth_controller import AuthController
+from views.responsive import apply_ui_scale
+from views.message_box import install as install_modern_message_boxes
+
+def apply_light_palette(app):
+    """Forces the app's light colour scheme everywhere.
+
+    Without this, Fusion follows the Windows dark mode, so pop-ups such as
+    QMessageBox (Success / Warning / Confirm ...) get a BLACK background while
+    the global stylesheet still paints their text dark, which makes the message
+    unreadable. An explicit palette makes every dialog light, whatever the
+    Windows theme is set to.
+    """
+    ink = QColor("#2A2421")
+    muted = QColor("#A39B90")
+    palette = QPalette()
+    for role, color in (
+        (QPalette.ColorRole.Window, "#F8F4EC"),
+        (QPalette.ColorRole.WindowText, "#2A2421"),
+        (QPalette.ColorRole.Base, "#FFFFFF"),
+        (QPalette.ColorRole.AlternateBase, "#F8F4EC"),
+        (QPalette.ColorRole.ToolTipBase, "#FFFFFF"),
+        (QPalette.ColorRole.ToolTipText, "#2A2421"),
+        (QPalette.ColorRole.Text, "#2A2421"),
+        (QPalette.ColorRole.Button, "#F3EEE3"),
+        (QPalette.ColorRole.ButtonText, "#2A2421"),
+        (QPalette.ColorRole.BrightText, "#FFFFFF"),
+        (QPalette.ColorRole.Highlight, "#C09E3B"),
+        (QPalette.ColorRole.HighlightedText, "#FFFFFF"),
+        (QPalette.ColorRole.Link, "#A9872E"),
+        (QPalette.ColorRole.PlaceholderText, "#A39B90"),
+    ):
+        palette.setColor(role, QColor(color))
+    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text,
+                 QPalette.ColorRole.ButtonText):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, muted)
+    app.setPalette(palette)
+
 
 def main():
     # --- WINDOWS TASKBAR FIX ---
@@ -15,8 +52,13 @@ def main():
     except:
         pass
         
+    # Pick a UI scale from this screen's size (must happen before QApplication)
+    apply_ui_scale()
+
     app = QApplication(sys.argv)
     app.setStyle('Fusion') 
+    apply_light_palette(app)   # keeps every pop-up light, even in Windows dark mode
+    install_modern_message_boxes()   # every QMessageBox.* call gets the modern card look
     
     # --- SET GLOBAL WINDOW ICON ---
     app.setWindowIcon(QIcon("ae-logo.jpg"))
@@ -61,6 +103,37 @@ def main():
         }
         QLineEdit:focus {
             border: 1px solid #C09E3B;
+        }
+
+        /* Notification / confirmation pop-ups (QMessageBox) - all pages */
+        QMessageBox {
+            background-color: #FFFFFF;
+        }
+        QMessageBox QLabel {
+            color: #2A2421;
+            background: transparent;
+            font-size: 13px;
+        }
+        QMessageBox QPushButton {
+            background-color: #F3EEE3;
+            color: #4A4238;
+            border: 1px solid #DDD5C3;
+            border-radius: 6px;
+            padding: 7px 22px;
+            min-width: 72px;
+            font-weight: 600;
+        }
+        QMessageBox QPushButton:hover {
+            background-color: #E9E2D2;
+        }
+        QMessageBox QPushButton:default {
+            background-color: #C09E3B;
+            color: #FFFFFF;
+            border: none;
+            font-weight: 700;
+        }
+        QMessageBox QPushButton:default:hover {
+            background-color: #A9872E;
         }
     """)
 

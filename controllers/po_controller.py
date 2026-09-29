@@ -86,16 +86,17 @@ class POController:
 
     def handle_mark_received(self, po_number):
         try:
-            self.model.mark_po_received(po_number)
-            QMessageBox.information(self.view, "Status Updated", f"Purchase Order {po_number} marked as Received.")
-            
+            restocked = self.model.mark_po_received(po_number)
+
             # This updates the PO table
             self.load_po_history()
-            
-            # THIS IS THE FIX: This triggers the global refresh so Inventory updates instantly
+
+            # Triggers the global refresh so Inventory updates instantly, and
+            # carries along exactly what got restocked so Inventory can show
+            # a proper notification instead of a plain "Received" alert here.
             if self.on_po_saved:
-                self.on_po_saved()
-                
+                self.on_po_saved({"po_number": po_number, "items": restocked})
+
         except AttributeError:
             QMessageBox.warning(self.view, "Model Update Needed", 
                                 "You need to add a 'mark_po_received(self, po_number)' method in your po_model.py first!")

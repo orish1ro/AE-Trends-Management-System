@@ -270,7 +270,8 @@ class HistoryModel:
             if not header:
                 return None
             items = conn.execute("""
-                SELECT pr.ProductName, pr.ProductID, pod.Quantity, pod.UnitCost
+                SELECT pr.ProductName, pr.ProductID, pod.Quantity, pod.UnitCost,
+                       pod.UnitSize, pod.UnitMeasure
                 FROM PurchaseOrderDetails pod
                 JOIN Product pr ON pr.ProductID = pod.ProductID
                 WHERE pod.PurchaseOrderID = ?
@@ -283,6 +284,8 @@ class HistoryModel:
                 "product_id": it["ProductID"],
                 "quantity": it["Quantity"],
                 "unit_cost": it["UnitCost"],
+                "size": it["UnitSize"],
+                "measure": it["UnitMeasure"],
                 "subtotal": it["Quantity"] * it["UnitCost"],
             }
             for it in items
