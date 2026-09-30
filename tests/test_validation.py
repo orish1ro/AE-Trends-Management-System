@@ -9,6 +9,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.db_manager import DatabaseManager
+from controllers.report_controller import ReportController
 from models.expense_model import ExpenseModel
 from models.history_model import HistoryModel
 from models.inventory_model import InventoryModel
@@ -219,6 +220,65 @@ class OrderTests(Base):
         self.assertEqual(self.stock(pid), 10)
         with self.assertRaises(ValidationError):
             hm.process_refund("abc")
+
+    def test_reports_only_count_completed_sales(self):
+        pid = self.add(stock=20)
+        po_code = self.po.create_po("Acme", FUTURE, 0, items_list=[{
+            "product": "Lipstick", "quantity": 10, "unit_cost": 25.0,
+            "size": None, "unit": "pcs",
+        }])
+        self.po.mark_po_received(po_code)
+
+        statuses = ("Completed", "Cancelled", "Pending", "Refunded")
+        order_ids = [int(self.order(pid).split("-")[1]) for _ in statuses]
+        with self.db.get_connection() as conn:
+            conn.executemany(
+                "UPDATE Orders SET OrderStatus = ? WHERE OrderID = ?",
+                [(status, order_id) for status, order_id in zip(statuses, order_ids)],
+            )
+
+        class Signal:
+            def connect(self, _handler):
+                pass
+
+        class ReportView:
+            filters_changed = Signal()
+            export_requested = Signal()
+            pl_granularity_changed = Signal()
+
+            def display_report(self, data):
+                self.data = data
+
+        class DashboardView:
+            def update_metrics(self, *args, **kwargs):
+                self.metrics = (args, kwargs)
+
+            def __getattr__(self, _name):
+                return lambda *args, **kwargs: None
+
+        report_view = ReportView()
+        dashboard_view = DashboardView()
+        controller = ReportController(self.db, report_view, dashboard_view)
+        today = date.today().isoformat()
+        controller.load_reports(today, today)
+
+        kpis = report_view.data["kpis"]
+        self.assertEqual(kpis["revenue"], 200)
+        self.assertEqual(kpis["cogs"], 50)
+        self.assertEqual(kpis["gross_profit"], 150)
+        self.assertEqual(kpis["inventory_spend"], 250)
+        self.assertEqual(kpis["net_profit"], -50)
+        self.assertEqual(report_view.data["sales_stats"]["orders"], 1)
+        self.assertEqual(report_view.data["sales_stats"]["avg_order_value"], 200)
+        self.assertEqual(len(report_view.data["transactions"]), 4)
+        self.assertEqual(sum(point["revenue"] for point in report_view.data["sales_series"]), 200)
+        self.assertEqual(sum(point["cogs"] for point in report_view.data["sales_series"]), 50)
+        self.assertEqual(sum(point["orders"] for point in report_view.data["sales_series"]), 1)
+        daily = controller._compute_daily_series(today, today)
+        self.assertEqual(sum(point["gross_profit"] for point in daily), 150)
+        self.assertEqual(dashboard_view.metrics[0][0], 200)
+        self.assertEqual(dashboard_view.metrics[1]["total_orders"], 1)
+        self.assertEqual(sum(row["profit"] for row in controller.current_rows), 150)
 
 
 class POTests(Base):

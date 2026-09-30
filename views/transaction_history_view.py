@@ -776,7 +776,7 @@ class TransactionHistoryView(QWidget):
             elif tab == "Inventory Purchases":
                 self.status_filter.addItems(sorted(set(self._raw_options["po_statuses"])))
             else:
-                self.status_filter.addItems(sorted(set(self._raw_options["order_statuses"])))
+                self.status_filter.addItems(sorted(set(self._raw_options["order_statuses"] + ["Received"])))
                 
             self.status_filter.blockSignals(False)
 

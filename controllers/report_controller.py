@@ -91,7 +91,8 @@ class ReportController:
                        date(o.OrderDate) AS OrderDay
                 FROM OrderDetails od
                 JOIN Orders o ON o.OrderID = od.OrderID
-                WHERE date(o.OrderDate) BETWEEN date(?) AND date(?)
+                                WHERE o.OrderStatus = 'Completed'
+                                    AND date(o.OrderDate) BETWEEN date(?) AND date(?)
                 """,
                 (from_date, to_date),
             ).fetchall()
@@ -121,10 +122,12 @@ class ReportController:
             # the 'localtime' modifier evaluates in UTC, which would put
             # this back out of sync with the chart's "Today" range again.
             today_sales = conn.execute(
-                "SELECT COALESCE(SUM(TotalAmount), 0) FROM Orders WHERE date(OrderDate) = date('now', 'localtime')"
+                "SELECT COALESCE(SUM(TotalAmount), 0) FROM Orders "
+                "WHERE OrderStatus = 'Completed' AND date(OrderDate) = date('now', 'localtime')"
             ).fetchone()[0]
             yesterday_sales = conn.execute(
-                "SELECT COALESCE(SUM(TotalAmount), 0) FROM Orders WHERE date(OrderDate) = date('now', 'localtime', '-1 day')"
+                "SELECT COALESCE(SUM(TotalAmount), 0) FROM Orders "
+                "WHERE OrderStatus = 'Completed' AND date(OrderDate) = date('now', 'localtime', '-1 day')"
             ).fetchone()[0]
             products = [
                 dict(row) for row in conn.execute("SELECT * FROM Product WHERE COALESCE(IsArchived, 0) = 0 AND COALESCE(IsPendingReceipt, 0) = 0")
@@ -133,7 +136,8 @@ class ReportController:
             prev_end = (datetime.strptime(from_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
             prev_start = (datetime.strptime(from_date, "%Y-%m-%d") - timedelta(days=span_days)).strftime("%Y-%m-%d")
             prev_revenue = conn.execute(
-                "SELECT COALESCE(SUM(TotalAmount), 0) FROM Orders WHERE date(OrderDate) BETWEEN date(?) AND date(?)",
+                "SELECT COALESCE(SUM(TotalAmount), 0) FROM Orders "
+                "WHERE OrderStatus = 'Completed' AND date(OrderDate) BETWEEN date(?) AND date(?)",
                 (prev_start, prev_end),
             ).fetchone()[0]
 
@@ -175,12 +179,13 @@ class ReportController:
                 "items_count": order["UnitsSold"] or 0,
                 "payment": payment_by_order.get(order["OrderID"], "—"),
                 "total": revenue,
-                "profit": revenue - cost,
+                "profit": revenue - cost if order["OrderStatus"] == "Completed" else 0.0,
                 "status": order["OrderStatus"],               # raw status, unchanged for the dashboard tab
                 "display_status": mapped_status,               # Completed / Pending / Cancelled for Reports
             })
 
-        total_sales = sum(row["total"] for row in rows)
+        completed_order_count = sum(1 for row in rows if row["status"] == "Completed")
+        total_sales = sum(row["total"] for row in rows if row["status"] == "Completed")
 
         # --- inventory health ---
         low_stock_items, inventory_health = [], []
@@ -277,7 +282,8 @@ class ReportController:
         # --- daily P&L / sales trend series across the whole selected range ---
         order_count_by_day = {}
         for row in rows:
-            order_count_by_day[row["chart_label"]] = order_count_by_day.get(row["chart_label"], 0) + 1
+            if row["status"] == "Completed":
+                order_count_by_day[row["chart_label"]] = order_count_by_day.get(row["chart_label"], 0) + 1
 
         daily_series = []
         for day in _daterange(from_date, to_date):
@@ -312,7 +318,7 @@ class ReportController:
                 self._compute_daily_series(*self._pl_lookback_range(self._pl_granularity, to_date)),
                 self._pl_granularity,
             )
-        avg_order_value = (total_sales / len(rows)) if rows else 0.0
+        avg_order_value = (total_sales / completed_order_count) if completed_order_count else 0.0
 
         self.current_rows = rows
         display_rows = [{**row, "status": row["display_status"]} for row in rows]
@@ -322,7 +328,7 @@ class ReportController:
             "pl_series": pl_series,
             "pl_granularity": self._pl_granularity,
             "sales_series": chart_series,
-            "sales_stats": {"orders": len(rows), "avg_order_value": avg_order_value},
+            "sales_stats": {"orders": completed_order_count, "avg_order_value": avg_order_value},
             "order_status": order_status_counts,
             "top_products": top_products,
             "inventory": inventory_health,
@@ -338,7 +344,7 @@ class ReportController:
             sum(1 for row in rows if row["status"] == "Pending"),
             expiring_count,
             ((today_sales - yesterday_sales) / yesterday_sales * 100) if yesterday_sales else None,
-            total_orders=len(rows),
+            total_orders=completed_order_count,
             inventory_value=inventory_value,
             expiring_days=nearest_expiring_days,
         )
@@ -355,7 +361,8 @@ class ReportController:
                 """
                 SELECT date(OrderDate) AS d, COALESCE(SUM(TotalAmount), 0) AS Total
                 FROM Orders
-                WHERE date(OrderDate) BETWEEN date(?) AND date(?)
+                                WHERE OrderStatus = 'Completed'
+                                    AND date(OrderDate) BETWEEN date(?) AND date(?)
                 GROUP BY date(OrderDate)
                 """,
                 (chart_from_str, chart_to_str),
@@ -429,7 +436,8 @@ class ReportController:
                 SELECT od.ProductID, od.Quantity, od.Subtotal, date(o.OrderDate) AS OrderDay
                 FROM OrderDetails od
                 JOIN Orders o ON o.OrderID = od.OrderID
-                WHERE date(o.OrderDate) BETWEEN date(?) AND date(?)
+                                WHERE o.OrderStatus = 'Completed'
+                                    AND date(o.OrderDate) BETWEEN date(?) AND date(?)
                 """,
                 (from_date, to_date),
             ).fetchall()
@@ -444,7 +452,8 @@ class ReportController:
                 """
                 SELECT OrderID, date(OrderDate) AS OrderDay
                 FROM Orders
-                WHERE date(OrderDate) BETWEEN date(?) AND date(?)
+                                WHERE OrderStatus = 'Completed'
+                                    AND date(OrderDate) BETWEEN date(?) AND date(?)
                 """,
                 (from_date, to_date),
             ).fetchall()
@@ -486,7 +495,7 @@ class ReportController:
                        CAST(strftime('%H', o.OrderDate) AS INTEGER) AS Hour
                 FROM OrderDetails od
                 JOIN Orders o ON o.OrderID = od.OrderID
-                WHERE date(o.OrderDate) = date(?)
+                  WHERE o.OrderStatus = 'Completed' AND date(o.OrderDate) = date(?)
                 """,
                 (day_str,),
             ).fetchall()
@@ -501,7 +510,7 @@ class ReportController:
                 """
                 SELECT OrderID, CAST(strftime('%H', OrderDate) AS INTEGER) AS Hour
                 FROM Orders
-                WHERE date(OrderDate) = date(?)
+                WHERE OrderStatus = 'Completed' AND date(OrderDate) = date(?)
                 """,
                 (day_str,),
             ).fetchall()
