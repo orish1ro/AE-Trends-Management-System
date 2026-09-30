@@ -1,3 +1,5 @@
+import re
+
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
                              QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, 
                              QButtonGroup, QDialog, QComboBox, QScrollArea, QMessageBox,
@@ -10,6 +12,58 @@ from PyQt6.QtGui import QColor
 from views.transaction_history_view import OrderDetailDialog  # noqa: F401
 
 LABEL_RESET = "background: transparent; border: none;"
+
+class ItemsLinkButton(QPushButton):
+    """Gold link for the ITEMS column: the first product plus "+N more".
+
+    The first product's name is shortened with "..." to fit whatever width the
+    column currently has, but the "+N more" part is never cut off. Hovering
+    shows every item; clicking opens the order details.
+    """
+
+    _STYLE = """
+        QPushButton {
+            color: #A9872E; background: transparent; border: none; outline: none;
+            text-align: left; padding: 0px 8px; font-weight: 600;
+        }
+        QPushButton:hover { color: #8A5A00; text-decoration: underline; }
+        QPushButton:pressed, QPushButton:focus { background: transparent; border: none; outline: none; }
+        QToolTip {
+            color: #2A2421; background-color: #FFFFFF; border: 1px solid #E5E0D5;
+            padding: 6px 8px; font-weight: 500;
+        }
+    """
+
+    def __init__(self, items, parent=None):
+        super().__init__(parent)
+        items = [i for i in (items or []) if i]
+        self._first = items[0] if items else "None"
+        more = len(items) - 1
+        self._suffix = f"  +{more} more" if more > 0 else ""
+        self.setToolTip("\n".join(f"\u2022 {i}" for i in items) if len(items) > 1 else "")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setStyleSheet(self._STYLE)
+        # Ignore our own text width so a long name can never widen the column.
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+        self._refresh_text()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_text()
+
+    def _refresh_text(self):
+        fm = self.fontMetrics()
+        room = self.width() - 16                      # 8px padding each side
+        if room <= 0:
+            text = self._first + self._suffix
+        else:
+            first_room = max(room - fm.horizontalAdvance(self._suffix), 40)
+            text = fm.elidedText(self._first, Qt.TextElideMode.ElideRight, first_room) + self._suffix
+        if text != self.text():
+            self.setText(text)
+
 
 def status_badge(text):
     STATUS_COLORS = {
@@ -221,27 +275,12 @@ class OrderStatusView(QWidget):
             self.table.setItem(row, 0, QTableWidgetItem(order_code))
             self.table.setItem(row, 1, QTableWidgetItem(ord_item['customer_name']))
             
-            # FIX: Make the underlying cell completely empty so it cannot overlap on selection
-            items_text = ord_item['items']
-            self.table.setItem(row, 2, QTableWidgetItem("")) 
-            
-            # Professional link styling
-            items_btn = QPushButton(items_text)
-            items_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            items_btn.setStyleSheet("""
-                QPushButton { 
-                    color: #A9872E; 
-                    background: transparent; 
-                    border: none; 
-                    text-align: left; 
-                    padding: 0px 8px;
-                    font-weight: 600;
-                }
-                QPushButton:hover { 
-                    color: #8A5A00; 
-                    text-decoration: underline; 
-                }
-            """)
+            # Keep the underlying cell empty so it cannot overlap the widget.
+            self.table.setItem(row, 2, QTableWidgetItem(""))
+
+            # First item + "+N more" (full list on hover), fitted to the column.
+            item_list = ord_item.get('item_list') or re.split(r'(?<=\)), ', ord_item['items'])
+            items_btn = ItemsLinkButton(item_list)
             items_btn.clicked.connect(lambda checked, oc=order_code: self.view_requested.emit(oc))
             self.table.setCellWidget(row, 2, items_btn)
             

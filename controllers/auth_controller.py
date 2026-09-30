@@ -9,6 +9,12 @@ from controllers.report_controller import ReportController
 from controllers.po_controller import POController
 from controllers.history_controller import HistoryController
 from PyQt6.QtWidgets import QMessageBox
+import time
+from utils.errors import report, log
+from utils.validators import ValidationError
+
+MAX_ATTEMPTS = 5      # failed logins allowed before a short lockout
+LOCKOUT_SECONDS = 30
 
 class AuthController:
     def __init__(self, db, login_view, main_window):
@@ -16,6 +22,8 @@ class AuthController:
         self.login_view = login_view
         self.main_window = main_window
         self.user_model = UserModel(db)
+        self._failed_logins = 0
+        self._locked_until = 0.0
 
         # Login signals
         self.login_view.login_button.clicked.connect(self.handle_login)
@@ -27,15 +35,39 @@ class AuthController:
         self.login_view.btn_submit_signup.clicked.connect(self.handle_signup)
 
     def handle_login(self):
+        wait = self._locked_until - time.monotonic()
+        if wait > 0:
+            QMessageBox.warning(self.login_view, "Too Many Attempts",
+                                f"Too many failed logins. Try again in {int(wait) + 1} seconds.")
+            return
+
         username = self.login_view.username_input.text().strip()
         password = self.login_view.password_input.text().strip()
+        if not username or not password:
+            QMessageBox.warning(self.login_view, "Login Failed",
+                                "Please enter both username and password.")
+            return
 
-        user = self.user_model.authenticate(username, password)
-        if user:
-            self.init_app_controllers(user)
-            self.login_view.hide()
-            self.main_window.set_user(user['full_name'], user['role'])
-            self.main_window.showMaximized()
+        try:
+            user = self.user_model.authenticate(username, password)
+            if user:
+                self._failed_logins = 0
+                self.init_app_controllers(user)
+                self.login_view.hide()
+                self.main_window.set_user(user['full_name'], user['role'])
+                self.main_window.showMaximized()
+                return
+        except Exception as exc:  # noqa: BLE001 - never crash on the login screen
+            report(exc, self.login_view, "Login Error", context="handle_login")
+            return
+
+        self._failed_logins += 1
+        log.warning("Failed login for username %r (%d)", username, self._failed_logins)
+        if self._failed_logins >= MAX_ATTEMPTS:
+            self._failed_logins = 0
+            self._locked_until = time.monotonic() + LOCKOUT_SECONDS
+            QMessageBox.warning(self.login_view, "Too Many Attempts",
+                                f"Too many failed logins. Locked for {LOCKOUT_SECONDS} seconds.")
         else:
             QMessageBox.warning(self.login_view, "Login Failed", "Invalid username or password.")
 
@@ -49,7 +81,11 @@ class AuthController:
             return
 
         # Default new signups to Staff/Employee role
-        success = self.user_model.register_user(username, password, full_name, role="Staff")
+        try:
+            success = self.user_model.register_user(username, password, full_name, role="Staff")
+        except Exception as exc:  # noqa: BLE001 - ValidationError or a database problem
+            report(exc, self.login_view, "Sign Up Failed", context="handle_signup")
+            return
         if success:
             QMessageBox.information(self.login_view, "Success", "Account created successfully! You can now log in.")
             self.login_view.reg_name_input.clear()

@@ -1,5 +1,9 @@
 """MODEL: reads/writes PurchaseOrder and PurchaseOrderDetails."""
+import sqlite3
 from datetime import datetime
+
+from utils.validators import (ValidationError, clean_date, clean_name, clean_order_code,
+                              clean_phone, clean_text, to_float, to_int)
 
 
 def po_number(po_id):
@@ -175,13 +179,19 @@ class POModel:
             for r in rows
         ]
 
+    def _clean_supplier(self, name, location, contact):
+        return (clean_name(name, "Supplier name"),
+                clean_text(location, "Location", required=False, max_len=150),
+                clean_phone(contact, "Contact number"))
+
     def add_supplier(self, name, location="", contact=""):
-        """Creates a new supplier. If a supplier with this exact name
-        already exists, updates its details instead of creating a
+        """Creates a new supplier. If a supplier with this name (any letter
+        case) already exists, updates its details instead of creating a
         duplicate (same de-dup behavior the PO form already relies on)."""
+        name, location, contact = self._clean_supplier(name, location, contact)
         with self.db.get_connection() as conn:
             existing = conn.execute(
-                "SELECT SupplierID FROM Supplier WHERE SupplierName = ?", (name,)
+                "SELECT SupplierID FROM Supplier WHERE LOWER(SupplierName) = LOWER(?)", (name,)
             ).fetchone()
             if existing:
                 conn.execute(
@@ -198,7 +208,16 @@ class POModel:
             return cur.lastrowid
 
     def update_supplier(self, supplier_id, name, location="", contact=""):
+        name, location, contact = self._clean_supplier(name, location, contact)
         with self.db.get_connection() as conn:
+            if not conn.execute("SELECT 1 FROM Supplier WHERE SupplierID = ?",
+                                (supplier_id,)).fetchone():
+                raise ValidationError("This supplier no longer exists. Refresh and try again.")
+            clash = conn.execute(
+                "SELECT 1 FROM Supplier WHERE LOWER(SupplierName) = LOWER(?) AND SupplierID != ?",
+                (name, supplier_id)).fetchone()
+            if clash:
+                raise ValidationError(f"Another supplier is already named '{name}'.")
             conn.execute(
                 "UPDATE Supplier SET SupplierName = ?, Location = ?, ContactNumber = ? "
                 "WHERE SupplierID = ?",
@@ -211,6 +230,9 @@ class POModel:
         supplier is still referenced by purchase orders or products and
         can't be safely removed."""
         with self.db.get_connection() as conn:
+            if not conn.execute("SELECT 1 FROM Supplier WHERE SupplierID = ?",
+                                (supplier_id,)).fetchone():
+                return False, "This supplier no longer exists. Refresh and try again."
             po_count = conn.execute(
                 "SELECT COUNT(*) c FROM PurchaseOrder WHERE SupplierID = ?", (supplier_id,)
             ).fetchone()["c"]
@@ -241,9 +263,51 @@ class POModel:
         )
         return cur.lastrowid
 
+    def _clean_po_items(self, items):
+        """Validates every line, merges repeated products, and returns
+        clean dicts. Raises ValidationError naming the offending product."""
+        merged = {}
+        for raw in items:
+            name = clean_name(raw.get("product"), "Product name")
+            qty = to_int(raw.get("quantity"), f"Quantity for '{name}'",
+                         minimum=1, allow_zero=False, maximum=100_000)
+            cost = to_float(raw.get("unit_cost"), f"Unit cost for '{name}'")
+            size = raw.get("size")
+            if size not in (None, ""):
+                size = to_float(size, f"Size for '{name}'", minimum=0, allow_zero=False,
+                                maximum=1_000_000)
+            else:
+                size = None
+            unit = clean_text(raw.get("unit"), "Unit", required=False, max_len=20) or None
+            key = name.lower()
+            if key in merged:
+                if merged[key]["unit_cost"] != cost:
+                    raise ValidationError(
+                        f"'{name}' is listed twice with different unit costs. "
+                        "Use one row per product.")
+                merged[key]["quantity"] += qty
+            else:
+                merged[key] = {"product": name, "quantity": qty, "unit_cost": cost,
+                               "size": size, "unit": unit}
+        if not merged:
+            raise ValidationError("Please add at least one product to the order.")
+        return list(merged.values())
+
     def create_po(self, supplier, date_expected, total_cost,
                   item_name=None, item_qty=0, item_cost=0.0, items_list=None):
-        """Creates a PO and inserts multiple items if items_list is provided."""
+        """Creates a PO and inserts multiple items if items_list is provided.
+        The total is recalculated from the items; the passed-in total is ignored."""
+        supplier = clean_name(supplier, "Supplier")
+        date_expected = clean_date(date_expected, "Expected delivery date",
+                                   required=True, allow_past=False)
+        # Copy, so the caller's list is never modified.
+        to_insert = list(items_list or [])
+        if item_name and item_qty and item_qty > 0:
+            to_insert.append({"product": item_name, "quantity": item_qty,
+                              "unit_cost": item_cost})
+        items = self._clean_po_items(to_insert)
+        total_cost = round(sum(i["quantity"] * i["unit_cost"] for i in items), 2)
+
         with self.db.get_connection() as conn:
             supplier_id = self._get_or_create_supplier(conn, supplier)
             cur = conn.execute(
@@ -253,53 +317,62 @@ class POModel:
                 (self.staff_id, supplier_id, date_expected, total_cost),
             )
             po_id = cur.lastrowid
-
-            # Combine single item (from old controller) and new multiple items list
-            to_insert = items_list or []
-            if item_name and item_qty > 0:
-                to_insert.append({
-                    'product': item_name,
-                    'quantity': item_qty,
-                    'unit_cost': item_cost
-                })
-
-            for item in to_insert:
-                p_name = item.get('product')
-                p_qty = item.get('quantity', 0)
-                p_cost = item.get('unit_cost', 0.0)
-                
-                if p_name and p_qty > 0:
-                    product_id = self._get_or_create_product(conn, p_name, p_cost)
-                    conn.execute(
-                        """INSERT INTO PurchaseOrderDetails (PurchaseOrderID, ProductID,
-                                                              Quantity, UnitCost,
-                                                              UnitSize, UnitMeasure)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        (po_id, product_id, p_qty, p_cost,
-                         item.get('size'), item.get('unit')),
-                    )
+            for item in items:
+                product_id = self._get_or_create_product(conn, item["product"], item["unit_cost"])
+                conn.execute(
+                    """INSERT INTO PurchaseOrderDetails (PurchaseOrderID, ProductID,
+                                                          Quantity, UnitCost,
+                                                          UnitSize, UnitMeasure)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (po_id, product_id, item["quantity"], item["unit_cost"],
+                     item["size"], item["unit"]),
+                )
             conn.commit()
             return po_number(po_id)
+
+    def cancel_po(self, po_code):
+        """Marks a Pending PO as Cancelled. Stock is only ever added when a PO
+        is received, so cancelling a Pending PO changes no inventory."""
+        po_id = clean_order_code(po_code, "PO")
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT Status FROM PurchaseOrder WHERE PurchaseOrderID = ?", (po_id,)
+            ).fetchone()
+            if row is None:
+                raise ValidationError(f"Purchase order {po_code} was not found.")
+            if row["Status"] != "Pending":
+                raise ValidationError(
+                    f"{po_code} is {row['Status']}; only Pending orders can be cancelled.")
+            conn.execute(
+                "UPDATE PurchaseOrder SET Status = 'Cancelled' WHERE PurchaseOrderID = ?",
+                (po_id,))
+            conn.commit()
+        return True
 
     def mark_po_received(self, po_code):
         """Updates PO to Received AND automatically adds the items to your
         inventory stock. Returns a list of {name, previous_qty, added_qty,
         new_qty} per item, so the UI can show exactly what changed instead
         of restocking silently."""
-        try:
-            po_id = int(po_code.split("-")[-1])
-        except (ValueError, IndexError):
-            return []
+        po_id = clean_order_code(po_code, "PO")
 
         with self.db.get_connection() as conn:
+            po_row = conn.execute(
+                "SELECT SupplierID, Status FROM PurchaseOrder WHERE PurchaseOrderID = ?", (po_id,)
+            ).fetchone()
+            if po_row is None:
+                raise ValidationError(f"Purchase order {po_code} was not found.")
+            # Only a Pending PO can be received. Without this check, pressing the
+            # button twice added the same stock twice.
+            if po_row["Status"] != "Pending":
+                raise ValidationError(
+                    f"{po_code} is already {po_row['Status']} and cannot be received again.")
+
             # 1. Update the status
             conn.execute(
                 "UPDATE PurchaseOrder SET Status = 'Received' WHERE PurchaseOrderID = ?",
                 (po_id,)
             )
-            po_row = conn.execute(
-                "SELECT SupplierID FROM PurchaseOrder WHERE PurchaseOrderID = ?", (po_id,)
-            ).fetchone()
 
             # 2. Fetch the items inside this order, along with each
             #    product's stock level right before we touch it.

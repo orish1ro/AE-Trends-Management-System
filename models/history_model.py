@@ -6,7 +6,9 @@ Combines two kinds of transactions that already exist elsewhere in the system:
 
 Nothing here writes to the database - this module only reads.
 """
+import os
 from datetime import datetime
+from utils.validators import ValidationError, clean_date_range
 
 
 def order_code(order_id):
@@ -26,9 +28,32 @@ def nice_date(iso_text):
     return iso_text or ""
 
 
+def reference_label(payment_method, reference, receipt):
+    """What to show in the REFERENCE column of the history table."""
+    if reference:
+        return reference
+    if receipt:
+        return "Receipt image"
+    return "-"
+
+
 class HistoryModel:
     def __init__(self, db_manager):
         self.db = db_manager
+
+    def resolve_receipt_path(self, stored):
+        """Receipts are stored relative to the database folder (new orders) or
+        as a full path (older orders). Returns an existing file path or ''."""
+        if not stored:
+            return ""
+        candidates = [stored]
+        if not os.path.isabs(stored):
+            base = os.path.dirname(os.path.abspath(self.db.db_path))
+            candidates.insert(0, os.path.join(base, stored))
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return ""
 
     # ---------------------------------------------------------------
     # Filter option lists (populate the combo boxes from real data)
@@ -69,6 +94,7 @@ class HistoryModel:
             SELECT o.OrderID, o.OrderDate, o.OrderStatus, o.TotalAmount,
                    c.FullName AS CustomerName, pl.PlatformName, st.Name AS StaffName,
                    p.PaymentMethod, p.PaymentStatus,
+                   p.ReferenceNumber, p.ReceiptImageURL,
                    COALESCE((SELECT SUM(od.Quantity) FROM OrderDetails od
                              WHERE od.OrderID = o.OrderID), 0) AS TotalQty
             FROM Orders o
@@ -81,11 +107,12 @@ class HistoryModel:
         params = []
         if search:
             query += """ AND (c.FullName LIKE ? OR ('ORD-' || printf('%04d', o.OrderID)) LIKE ?
+                         OR IFNULL(p.ReferenceNumber, '') LIKE ?
                          OR EXISTS (SELECT 1 FROM OrderDetails od2 JOIN Product pr
                                     ON pr.ProductID = od2.ProductID
                                     WHERE od2.OrderID = o.OrderID AND pr.ProductName LIKE ?))"""
             like = f"%{search}%"
-            params += [like, like, like]
+            params += [like, like, like, like]
         if date_from:
             query += " AND date(o.OrderDate) >= date(?)"
             params.append(date_from)
@@ -120,6 +147,10 @@ class HistoryModel:
                 "raw_date": r["OrderDate"],
                 "payment_method": r["PaymentMethod"] or "-",
                 "payment_status": r["PaymentStatus"] or "Unpaid",
+                "reference": r["ReferenceNumber"] or "",
+                "has_receipt": bool(r["ReceiptImageURL"]),
+                "reference_label": reference_label(
+                    r["PaymentMethod"], r["ReferenceNumber"], r["ReceiptImageURL"]),
                 "processed_by": r["StaffName"],
                 "quantity": r["TotalQty"],
                 "total": r["TotalAmount"],
@@ -134,7 +165,7 @@ class HistoryModel:
                 SELECT o.OrderID, o.OrderDate, o.OrderStatus, o.TotalAmount, o.DeliveryAddress,
                        c.FullName AS CustomerName, c.ContactNumber, pl.PlatformName,
                        st.Name AS StaffName, p.PaymentMethod, p.PaymentStatus, p.PaymentDate,
-                       p.ReferenceNumber
+                       p.ReferenceNumber, p.ReceiptImageURL
                 FROM Orders o
                 JOIN Customer c ON c.CustomerID = o.CustomerID
                 JOIN Platform pl ON pl.PlatformID = o.PlatformID
@@ -164,6 +195,8 @@ class HistoryModel:
             "payment_method": header["PaymentMethod"] or "-",
             "payment_status": header["PaymentStatus"] or "Unpaid",
             "payment_reference": header["ReferenceNumber"] or "-",
+            "receipt_stored": header["ReceiptImageURL"] or "",
+            "receipt_path": self.resolve_receipt_path(header["ReceiptImageURL"]),
             "status": header["OrderStatus"],
             "cancelled_date": "Not recorded",
             "cancelled_reason": "Not recorded",
@@ -183,14 +216,29 @@ class HistoryModel:
         }
         
     def process_refund(self, order_id):
-        """Marks an order as Refunded and safely restores the inventory stock."""
+        """Marks a Completed order as Refunded and restores its stock.
+        Raises ValidationError if the order is missing or not refundable,
+        so a double click can never restock the same items twice."""
+        try:
+            order_id = int(order_id)
+        except (TypeError, ValueError):
+            raise ValidationError("That order number is not valid.")
         with self.db.get_connection() as conn:
+            row = conn.execute("SELECT OrderStatus FROM Orders WHERE OrderID = ?",
+                               (order_id,)).fetchone()
+            if row is None:
+                raise ValidationError("This order no longer exists. Refresh and try again.")
+            if row["OrderStatus"] != "Completed":
+                raise ValidationError(
+                    f"Only Completed orders can be refunded (this one is {row['OrderStatus']}).")
+
             # 1. Mark the transaction as Refunded
             conn.execute("UPDATE Orders SET OrderStatus = 'Refunded' WHERE OrderID = ?", (order_id,))
-            
+
             # 2. Find the items that were purchased
-            items = conn.execute("SELECT ProductID, Quantity FROM OrderDetails WHERE OrderID = ?", (order_id,)).fetchall()
-            
+            items = conn.execute("SELECT ProductID, Quantity FROM OrderDetails WHERE OrderID = ?",
+                                 (order_id,)).fetchall()
+
             # 3. Add those quantities back into your active stock
             for item in items:
                 conn.execute(

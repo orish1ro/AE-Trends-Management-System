@@ -5,6 +5,8 @@ from PyQt6.QtCore import QDate
 from PyQt6.QtWidgets import QMessageBox
 
 from models.inventory_model import compute_status
+from utils.errors import report, safe_slot
+from utils.validators import ValidationError, clean_date_range
 from models.transaction_model import TransactionModel, nice_date
 
 # Orders don't have a literal "Cancelled" status in the schema -- map the
@@ -52,11 +54,19 @@ class ReportController:
         self.report_view.pl_granularity_changed.connect(self.change_pl_granularity)
 
     # ------------------------------------------------------------------ #
+    @safe_slot("Reports Error", parent_attr="report_view")
     def load_reports(self, from_date=None, to_date=None):
         if from_date is None:
             from_date = self.report_view.from_date.date().toString("yyyy-MM-dd")
         if to_date is None:
             to_date = self.report_view.to_date.date().toString("yyyy-MM-dd")
+
+        # A "from" date after the "to" date would quietly show an empty report.
+        try:
+            clean_date_range(from_date, to_date)
+        except ValidationError as exc:
+            QMessageBox.warning(self.report_view, "Check the Dates", str(exc))
+            return
 
         with self.db.get_connection() as conn:
             order_rows = conn.execute(
@@ -519,6 +529,7 @@ class ReportController:
             })
         return series
 
+    @safe_slot("Reports Error", parent_attr="report_view")
     def change_pl_granularity(self, granularity):
         self._pl_granularity = granularity
         if granularity == "Daily":
@@ -530,6 +541,7 @@ class ReportController:
         self.report_view.update_pl_chart(self._bucket_series(series, granularity), granularity)
 
     # ------------------------------------------------------------------ #
+    @safe_slot("Dashboard Error", parent_attr="dashboard_view")
     def load_dashboard_range(self, preset):
         today = QDate.currentDate()
         if preset == "Today":
@@ -549,15 +561,22 @@ class ReportController:
     # ------------------------------------------------------------------ #
     _EXPORT_HEADERS = ["Order", "Date", "Customer", "Type", "Items", "Payment", "Total", "Profit", "Status"]
 
+    @staticmethod
+    def _safe_cell(value):
+        """Stops a customer name like '=HYPERLINK(...)' from running as a
+        formula when the export is opened in Excel/Sheets."""
+        text = "" if value is None else str(value)
+        return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
     def _export_dicts(self):
         return [
             {
                 "Order": row["order"],
                 "Date": row["date"],
-                "Customer": row["customer"],
-                "Type": row["type"],
+                "Customer": self._safe_cell(row["customer"]),
+                "Type": self._safe_cell(row["type"]),
                 "Items": row["items_count"],
-                "Payment": row["payment"],
+                "Payment": self._safe_cell(row["payment"]),
                 "Total": f"{row['total']:.2f}",
                 "Profit": f"{row['profit']:.2f}",
                 "Status": row["status"],
@@ -566,15 +585,28 @@ class ReportController:
         ]
 
     def export_report(self, fmt, path):
+        if not self.current_rows:
+            QMessageBox.information(self.report_view, "Nothing to Export",
+                                    "There are no rows in the current report.")
+            return
+        if fmt not in ("csv", "excel", "pdf"):
+            QMessageBox.warning(self.report_view, "Export Failed",
+                                f"'{fmt}' is not a supported export format.")
+            return
+        if not path or not str(path).strip():
+            return   # the save dialog was cancelled
+        ext = {"csv": ".csv", "excel": ".xlsx", "pdf": ".pdf"}[fmt]
+        if not str(path).lower().endswith(ext):
+            path = f"{path}{ext}"
         try:
             if fmt == "csv":
                 self._export_csv(path)
             elif fmt == "excel":
                 self._export_excel(path)
-            elif fmt == "pdf":
+            else:
                 self._export_pdf(path)
-        except Exception as exc:  # noqa: BLE001 -- surface any export failure to the user
-            QMessageBox.warning(self.report_view, "Export Failed", str(exc))
+        except Exception as exc:  # noqa: BLE001 -- logged, shown in plain words
+            report(exc, self.report_view, "Export Failed", context=f"export_report {fmt}")
 
     def _export_csv(self, path):
         with open(path, "w", newline="", encoding="utf-8-sig") as file:

@@ -1,6 +1,8 @@
 from PyQt6.QtWidgets import QMessageBox
 from views.order_status_view import OrderDetailDialog
 import re
+from utils.errors import report, safe_slot, friendly_message, log
+from utils.validators import ValidationError
 
 
 class TransactionController:
@@ -28,6 +30,7 @@ class TransactionController:
 
         self.load_orders()
 
+    @safe_slot("Catalog Error", parent_attr="record_view")
     def load_catalog(self):
         products = self.inv_model.get_all_products()
         self.record_view.populate_catalog(products)
@@ -126,13 +129,18 @@ class TransactionController:
             if self.on_order_saved:
                 self.on_order_saved()
 
-        except Exception:
-            self.record_view.show_form_error("Unable to save transaction. Please check the fields and try again.")
+        except ValidationError as exc:
+            self.record_view.show_form_error(str(exc))
+
+        except Exception as exc:  # noqa: BLE001
+            log.error("Transaction failed: %s", exc, exc_info=True)
+            self.record_view.show_form_error(friendly_message(exc))
 
         finally:
             self.record_view.confirm_btn.setEnabled(True)
             self.record_view.confirm_btn.setText("Confirm Transaction")
 
+    @safe_slot("Order Status Error", parent_attr="status_view")
     def load_orders(self):
         current_tab = self.status_view.get_active_tab()
         search = self.status_view.search_input.text().strip()
@@ -141,50 +149,36 @@ class TransactionController:
         orders = self.txn_model.get_all_orders(current_tab, search, status_filter)
         self.status_view.display_orders(orders)
         
-    def handle_order_confirmation(self, order_code):
-        """
-        Confirm Transaction button:
-        Order Status -> Transaction History (as Completed)
-        """
-        success = self.txn_model.update_order_status(
-            order_code,
-            "Completed"
-        )
-
-        if success:
-            QMessageBox.information(
-                self.status_view,
-                "Transaction Confirmed",
-                "Order has been moved to Transaction History."
-            )
-
+    def _change_status(self, order_code, new_status, title, message, reload_catalog=False):
+        """Shared by confirm / cancel / dropdown changes. Any failure is
+        explained to the user and the table is reloaded so it shows the
+        real state instead of the change that did not happen."""
+        try:
+            success = self.txn_model.update_order_status(order_code, new_status)
+        except Exception as exc:  # noqa: BLE001
+            report(exc, self.status_view, "Order Update Failed", context=f"{order_code}->{new_status}")
             self.load_orders()
+            return False
+        if success:
+            if message:
+                QMessageBox.information(self.status_view, title, message)
+            self.load_orders()
+            if reload_catalog:
+                self.load_catalog()   # cancelled items are back in stock
+            if self.on_order_saved:
+                self.on_order_saved()
+        return success
 
-        if self.on_order_saved:
-            self.on_order_saved()
+    def handle_order_confirmation(self, order_code):
+        """Confirm Transaction button: Order Status -> Transaction History (Completed)."""
+        self._change_status(order_code, "Completed", "Transaction Confirmed",
+                            "Order has been moved to Transaction History.")
 
     def handle_order_cancellation(self, order_code):
-        """
-        Confirm Cancellation button:
-        Order Status -> Transaction History (as Cancelled)
-        """
-        success = self.txn_model.update_order_status(
-            order_code,
-            "Cancelled"
-        )
-
-        if success:
-            QMessageBox.information(
-                self.status_view,
-                "Order Cancelled",
-                "Order has been marked as Cancelled and moved to Transaction History."
-            )
-
-            self.load_orders()
-            self.load_catalog()   # cancelled items are back in stock
-
-        if self.on_order_saved:
-            self.on_order_saved()
+        """Confirm Cancellation button: Order Status -> Transaction History (Cancelled)."""
+        self._change_status(order_code, "Cancelled", "Order Cancelled",
+                            "Order has been marked as Cancelled and moved to Transaction History.",
+                            reload_catalog=True)
 
     def handle_status_update(self, order_code, new_status):
         """
@@ -192,12 +186,7 @@ class TransactionController:
         Completed/Refunded/Cancelled must go through their own
         confirm/refund/cancel flows, not this dropdown-triggered path.
         """
-        allowed = [
-            "Pending",
-            "Paid",
-            "Prepared",
-            "Shipped"
-        ]
+        allowed = ["Pending", "Paid", "Prepared", "Shipped"]
 
         if new_status not in allowed:
             QMessageBox.warning(
@@ -205,26 +194,19 @@ class TransactionController:
                 "Invalid Status",
                 "Use Confirm Transaction button to complete the order."
             )
-
             self.load_orders()
             return
 
-        success = self.txn_model.update_order_status(
-            order_code,
-            new_status
-        )
+        self._change_status(order_code, new_status, "", "")
 
-        if success:
-            self.load_orders()
-
-            if self.on_order_saved:
-                self.on_order_saved()
-        
+    @safe_slot("Order Details Error", parent_attr="status_view")
     def open_order_popup(self, order_code):
         # Fetch the professional order details using the order_code
         detail = self.txn_model.get_order_detail(order_code)
-        
-        if detail:
-            from views.order_status_view import OrderDetailDialog
-            dialog = OrderDetailDialog(self.status_view, detail)
-            dialog.exec()
+
+        if not detail:
+            QMessageBox.warning(self.status_view, "Order Not Found",
+                                f"Order {order_code} could not be found. It may have been removed.")
+            return
+        dialog = OrderDetailDialog(self.status_view, detail)
+        dialog.exec()

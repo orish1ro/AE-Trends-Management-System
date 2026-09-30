@@ -5,6 +5,9 @@ so this file computes a stock status on the fly instead of storing one.
 Change REORDER_LEVEL below if you want a different low-stock threshold."""
 from datetime import datetime, timedelta
 
+from utils.validators import (ValidationError, clean_date, clean_name, clean_sku,
+                              clean_text, to_float, to_int, MAX_QTY)
+
 REORDER_LEVEL = 10          # below or equal to this = "Low Stock"
 EXPIRING_WITHIN_DAYS = 60    # within this many days = "Expiring Soon"
 PLACEHOLDER_SUPPLIER = "General Supplier"   # stand-in when a product has no known supplier
@@ -131,8 +134,39 @@ class InventoryModel:
             return row["SupplierID"]
         return conn.execute("INSERT INTO Supplier (SupplierName) VALUES (?)", (name,)).lastrowid
 
+    def _validate_product(self, conn, name, category, price, stock, reorder, exp_date,
+                          sku, image_path, supplier, product_id=None):
+        """Checks every product field and returns the cleaned values.
+        Raises ValidationError with a message the user can act on."""
+        name = clean_name(name, "Product name")
+        category = clean_text(category, "Category", required=False, max_len=50)
+        price = to_float(price, "Price")
+        stock = to_int(stock, "Stock quantity")
+        reorder = to_int(reorder if str(reorder).strip() != "" else 10, "Reorder level")
+        exp_date = clean_date(exp_date, "Expiration date")
+        sku = clean_sku(sku)
+        image_path = clean_text(image_path, "Image path", required=False, max_len=500)
+        supplier = clean_text(supplier, "Supplier", required=False, max_len=100)
+
+        dup = conn.execute(
+            "SELECT ProductID FROM Product WHERE LOWER(ProductName) = LOWER(?) "
+            "AND COALESCE(IsPendingReceipt, 0) = 0 AND ProductID != ?",
+            (name, product_id or -1)).fetchone()
+        if dup:
+            raise ValidationError(f"A product named '{name}' already exists.")
+        if sku:
+            dup = conn.execute(
+                "SELECT ProductName FROM Product WHERE LOWER(SKU) = LOWER(?) AND ProductID != ?",
+                (sku, product_id or -1)).fetchone()
+            if dup:
+                raise ValidationError(f"SKU '{sku}' is already used by '{dup['ProductName']}'.")
+        return name, category, price, stock, reorder, exp_date, sku, image_path, supplier
+
     def add_product(self, name, category, price, stock, reorder, exp_date, sku="", image_path="", supplier=""):
         with self.db.get_connection() as conn:
+            (name, category, price, stock, reorder, exp_date, sku, image_path,
+             supplier) = self._validate_product(conn, name, category, price, stock, reorder,
+                                                exp_date, sku, image_path, supplier)
             supplier_id = self._supplier_id_for(conn, supplier)
             # A purchase order may have already created a hidden product with this
             # name. Fill that one in (and reveal it) instead of making a duplicate.
@@ -170,6 +204,12 @@ class InventoryModel:
 
     def update_product(self, product_id, name, sku, category, price, stock, reorder, exp_date, image_path="", supplier=""):
         with self.db.get_connection() as conn:
+            if not conn.execute("SELECT 1 FROM Product WHERE ProductID = ?", (product_id,)).fetchone():
+                raise ValidationError("This product no longer exists. Refresh and try again.")
+            (name, category, price, stock, reorder, exp_date, sku, image_path,
+             supplier) = self._validate_product(conn, name, category, price, stock, reorder,
+                                                exp_date, sku, image_path, supplier,
+                                                product_id=product_id)
             if (supplier or "").strip():   # blank = leave the supplier as it is
                 conn.execute("UPDATE Product SET SupplierID=? WHERE ProductID=?",
                              (self._supplier_id_for(conn, supplier), product_id))
@@ -195,18 +235,32 @@ class InventoryModel:
             ).fetchone()
         return row["n"] if row else 0
 
+    def _require_product(self, conn, product_id):
+        if not conn.execute("SELECT 1 FROM Product WHERE ProductID = ?", (product_id,)).fetchone():
+            raise ValidationError("This product no longer exists. Refresh and try again.")
+
     def restore_product(self, product_id):
         with self.db.get_connection() as conn:
+            self._require_product(conn, product_id)
             conn.execute("UPDATE Product SET IsArchived=0, LastEditedAt=datetime('now') WHERE ProductID=?", (product_id,))
             conn.commit()
 
     def archive_product(self, product_id):
         with self.db.get_connection() as conn:
+            self._require_product(conn, product_id)
             conn.execute("UPDATE Product SET IsArchived=1, LastEditedAt=datetime('now') WHERE ProductID=?", (product_id,))
             conn.commit()
 
     def update_stock(self, product_id, qty_change):
+        qty_change = to_int(qty_change, "Stock change", minimum=-MAX_QTY)
         with self.db.get_connection() as conn:
+            row = conn.execute("SELECT StockQuantity FROM Product WHERE ProductID = ?",
+                               (product_id,)).fetchone()
+            if row is None:
+                raise ValidationError("This product no longer exists. Refresh and try again.")
+            if (row["StockQuantity"] or 0) + qty_change < 0:
+                raise ValidationError(
+                    f"Not enough stock: only {row['StockQuantity']} available.")
             conn.execute(
                 "UPDATE Product SET StockQuantity = StockQuantity + ? WHERE ProductID = ?",
                 (qty_change, product_id),

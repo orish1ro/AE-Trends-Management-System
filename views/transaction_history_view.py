@@ -15,7 +15,8 @@ from PyQt6.QtWidgets import (
     QScrollArea, QMessageBox, QSizePolicy, QGridLayout, QFileDialog
 )
 from PyQt6.QtCore import Qt, QDate, pyqtSignal, QPoint
-from PyQt6.QtGui import QPainter, QPolygon
+from PyQt6.QtGui import QPainter, QPolygon, QPixmap, QDesktopServices
+from PyQt6.QtCore import QUrl, QTimer
 
 LABEL_RESET = "background: transparent; border: none;"
 
@@ -427,9 +428,12 @@ class TransactionHistoryView(QWidget):
         self.table.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
+        # Columns are sized to their content (see _fit_columns), so nothing is
+        # ever cut off. On a very narrow window a scrollbar appears instead.
         self.table.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
+        self.table.setTextElideMode(Qt.TextElideMode.ElideNone)
 
         # Raised to 500 to guarantee it fits 10 rows + 40px Header + Borders safely
         self.table.setFixedHeight(500)
@@ -448,11 +452,11 @@ class TransactionHistoryView(QWidget):
                 font-size: 11px;
                 border: none;
                 border-bottom: 1px solid #E5E0D5;
-                padding: 10px 14px;
+                padding: 10px 10px;
             }
             QTableWidget::item {
                 border-bottom: 1px solid #F0EAE1;
-                padding: 0px 14px;
+                padding: 0px 10px;
             }
         """)
         self.table.setShowGrid(False)          # no vertical/horizontal grid lines
@@ -717,23 +721,22 @@ class TransactionHistoryView(QWidget):
         if tab == "Customer Orders":
             headers = [
                 "ORDER ID", "CUSTOMER", "PLATFORM", "DATE & TIME",
-                "PAYMENT", "PROCESSED BY", "QTY", "TOTAL", "STATUS", ""
+                "PAYMENT", "REFERENCE NO.", "TOTAL", "STATUS", ""
             ]
             self.platform_filter.setVisible(True)
             self.payment_filter.setVisible(True)
 
         elif tab == "Inventory Purchases":
             headers = [
-                "PURCHASE ID", "SUPPLIER", "DATE", "PROCESSED BY",
-                "QTY", "TOTAL", "STATUS", ""
+                "PURCHASE ID", "SUPPLIER", "DATE", "TOTAL", "STATUS", ""
             ]
             self.platform_filter.setVisible(False)
             self.payment_filter.setVisible(False)
 
         else:
             headers = [
-                "ID", "TYPE", "CUSTOMER/SUPPLIER", "DATE", "PROCESSED BY",
-                "QTY", "TOTAL", "STATUS", ""
+                "ID", "TYPE", "CUSTOMER/SUPPLIER", "DATE", "PAYMENT",
+                "REFERENCE NO.", "TOTAL", "STATUS", ""
             ]
             self.platform_filter.setVisible(True)
             self.payment_filter.setVisible(True)
@@ -744,17 +747,11 @@ class TransactionHistoryView(QWidget):
 
         self.table.horizontalHeader().setFixedHeight(40)
 
+        # Widths are calculated in _fit_columns() once the rows are filled in.
         self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
+            QHeaderView.ResizeMode.Interactive
         )
-        self.table.horizontalHeader().setSectionResizeMode(
-            len(headers) - 1,
-            QHeaderView.ResizeMode.Fixed
-        )
-        self.table.setColumnWidth(
-            len(headers) - 1,
-            96
-        )
+        self.table.horizontalHeader().setStretchLastSection(False)
 
         # header alignment matches the cells: QTY centred, TOTAL right, STATUS centred
         for col, text in enumerate(headers):
@@ -768,10 +765,6 @@ class TransactionHistoryView(QWidget):
             else:
                 align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             header_item.setTextAlignment(align)
-            if text in ("DATE", "DATE & TIME"):
-                self.table.horizontalHeader().setSectionResizeMode(
-                    col, QHeaderView.ResizeMode.ResizeToContents
-                )
 
         if hasattr(self, '_raw_options'):
             self.status_filter.blockSignals(True)
@@ -786,6 +779,41 @@ class TransactionHistoryView(QWidget):
                 self.status_filter.addItems(sorted(set(self._raw_options["order_statuses"])))
                 
             self.status_filter.blockSignals(False)
+
+    # ==============================================================
+    # COLUMN SIZING - every column is as wide as its longest value/header
+    # ==============================================================
+
+    STATUS_COL_WIDTH = 140
+    VIEW_COL_WIDTH = 92
+
+    def _fit_columns(self):
+        table = self.table
+        header = table.horizontalHeader()
+        count = table.columnCount()
+        if count < 3:
+            return
+
+        widths = []
+        for col in range(count - 2):
+            content = table.sizeHintForColumn(col) if table.rowCount() else 0
+            widths.append(max(content, header.sectionSizeHint(col)) + 12)
+        widths += [self.STATUS_COL_WIDTH, self.VIEW_COL_WIDTH]
+
+        # If there is spare room, share it out so the table fills the card.
+        spare = table.viewport().width() - sum(widths)
+        if spare > 0:
+            share = spare // (count - 2)
+            widths = [w + share for w in widths[:-2]] + widths[-2:]
+
+        for col, width in enumerate(widths):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+            table.setColumnWidth(col, width)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # wait one tick so the table has its final size before measuring
+        QTimer.singleShot(0, self._fit_columns)
 
     # ==============================================================
     # VIEW BUTTON
@@ -892,8 +920,7 @@ class TransactionHistoryView(QWidget):
                     r["platform"],
                     r["date"],
                     r["payment_method"],
-                    r["processed_by"],
-                    str(r["quantity"]),
+                    r["reference_label"],
                     f"₱{r['total']:,.2f}",
                 ]
 
@@ -902,8 +929,6 @@ class TransactionHistoryView(QWidget):
                     r["code"],
                     r["supplier"],
                     r["date"],
-                    r["processed_by"],
-                    str(r["quantity"]),
                     f"₱{r['total']:,.2f}",
                 ]
 
@@ -920,13 +945,14 @@ class TransactionHistoryView(QWidget):
                     else "Inventory Purchase"
                 )
 
+                is_order = r["kind"] == "order"
                 values = [
                     r["code"],
                     type_label,
                     party,
                     r["date"],
-                    r["processed_by"],
-                    str(r["quantity"]),
+                    r["payment_method"] if is_order else "-",
+                    r["reference_label"] if is_order else "-",
                     f"₱{r['total']:,.2f}",
                 ]
 
@@ -980,6 +1006,8 @@ class TransactionHistoryView(QWidget):
                     r["id"]
                 ))
             )
+
+        self._fit_columns()
 
 
 # ======================================================================
@@ -1196,6 +1224,29 @@ class _DetailDialog(QDialog):
         self.footer.addWidget(close_btn)
 
 
+class _ReceiptPreview(QLabel):
+    """Receipt thumbnail. Click it to open the full image in the default viewer."""
+
+    def __init__(self, path):
+        super().__init__()
+        self._path = path
+        self.setStyleSheet(
+            "background: #FFFFFF; border: 1px solid #E5E0D5; border-radius: 8px; padding: 6px;")
+        pix = QPixmap(path)
+        if pix.isNull():
+            self.setText("Receipt image could not be opened.")
+            return
+        self.setPixmap(pix.scaled(
+            260, 260, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click to open the full receipt")
+
+    def mousePressEvent(self, event):
+        if self.pixmap() is not None and not self.pixmap().isNull():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._path))
+
+
 class OrderDetailDialog(_DetailDialog):
     """Read-only popup shown when a Customer Order is opened."""
 
@@ -1251,6 +1302,18 @@ class OrderDetailDialog(_DetailDialog):
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
+
+        # Receipt image (GCash / Online Banking). Cash sales have none.
+        if detail["receipt_path"]:
+            lay.addWidget(_dlg_text("RECEIPT IMAGE", 10, 700, DLG_MUTED, wrap=False))
+            lay.addWidget(_ReceiptPreview(detail["receipt_path"]), 0,
+                          Qt.AlignmentFlag.AlignLeft)
+        elif detail["receipt_stored"]:
+            lay.addWidget(_dlg_text(
+                "Receipt image was uploaded but the file can no longer be found "
+                "(it may have been moved or deleted).", 11, 500, DLG_MUTED))
+        elif detail["payment_method"] != "Cash":
+            lay.addWidget(_dlg_text("No receipt image was uploaded.", 11, 500, DLG_MUTED))
         self.body.addWidget(card)
         self.body.addStretch(1)
 

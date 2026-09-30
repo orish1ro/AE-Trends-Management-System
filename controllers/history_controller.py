@@ -1,5 +1,7 @@
 """CONTROLLER: Transaction History."""
 from PyQt6.QtWidgets import QMessageBox
+from utils.errors import report, safe_slot
+from utils.validators import ValidationError, clean_date_range
 from views.transaction_history_view import OrderDetailDialog, PurchaseDetailDialog
 
 
@@ -22,10 +24,17 @@ class HistoryController:
         
         self.load()
 
+    @safe_slot("Transaction History Error")
     def load(self):
         self.current_page = 1
         tab = self.view.get_active_tab()
         f = self.view.get_filters()
+        # A start date after the end date would silently show nothing.
+        try:
+            clean_date_range(f.get("date_from"), f.get("date_to"))
+        except ValidationError as exc:
+            QMessageBox.warning(self.view, "Check the Dates", str(exc))
+            return
 
         orders = self.model.get_customer_orders(
             search=f["search"], date_from=f["date_from"], date_to=f["date_to"],
@@ -72,6 +81,10 @@ class HistoryController:
                 self.view, "Nothing to Export",
                 "There are no transactions matching the current filters.")
             return
+        if not path or not str(path).strip():
+            return
+        if not str(path).lower().endswith(".pdf"):
+            path = f"{path}.pdf"
         try:
             from controllers.history_pdf import build_history_pdf
             build_history_pdf(
@@ -89,12 +102,13 @@ class HistoryController:
                 "Couldn't write the file. If it is open in another program, "
                 "close it and try again.")
             return
-        except Exception as exc:  # noqa: BLE001 - show any failure to the user
-            QMessageBox.warning(self.view, "Export Failed", str(exc))
+        except Exception as exc:  # noqa: BLE001 - log it, show a friendly reason
+            report(exc, self.view, "Export Failed", context="export_pdf")
             return
         QMessageBox.information(
             self.view, "Export Complete", f"Transaction history saved to:\n{path}")
 
+    @safe_slot("Transaction History Error")
     def change_page(self, direction):
         if not self.current_rows:
             return
@@ -116,6 +130,7 @@ class HistoryController:
         )
         self.view.set_pagination(len(self.current_rows), self.current_page)
 
+    @safe_slot("Transaction History Error")
     def open_detail(self, kind, row_id):
         if kind == "order":
             detail = self.model.get_order_detail(row_id)
@@ -129,5 +144,10 @@ class HistoryController:
                 
     def process_refund(self, order_id):
         """Triggers the refund in the DB and refreshes the table."""
-        if self.model.process_refund(order_id):
-            self.load()
+        try:
+            self.model.process_refund(order_id)
+        except Exception as exc:  # noqa: BLE001
+            report(exc, self.view, "Refund Failed", context=f"refund {order_id}")
+            self.load()      # show the real status
+            return
+        self.load()

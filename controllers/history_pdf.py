@@ -364,17 +364,19 @@ def build_history_pdf(path, rows, filters, tab="All Transactions", generated_by=
 
         o_headers = [Paragraph("ORDER ID", s_th), Paragraph("DATE &amp; TIME", s_th),
                      Paragraph("CUSTOMER", s_th), Paragraph("PLATFORM", s_th),
-                     Paragraph("PAYMENT", s_th), Paragraph("PROCESSED BY", s_th),
+                     Paragraph("PAYMENT", s_th), Paragraph("REFERENCE NO.", s_th),
+                     Paragraph("PROCESSED BY", s_th),
                      Paragraph("QTY", s_th_c), Paragraph("TOTAL", s_th_r),
                      Paragraph("STATUS", s_th_c)]
-        o_widths = [0.78 * inch, 1.6 * inch, 1.3 * inch, 0.95 * inch, 1.0 * inch,
-                    1.05 * inch, 0.45 * inch, 0.9 * inch, 0.97 * inch]
+        o_widths = [0.78 * inch, 1.5 * inch, 1.15 * inch, 0.85 * inch, 0.9 * inch,
+                    1.15 * inch, 1.0 * inch, 0.45 * inch, 0.85 * inch, 0.92 * inch]
         scale = usable / sum(o_widths)
         o_widths = [w * scale for w in o_widths]
 
         def order_row(r):
             return [P(r["code"], s_td_b), P(r["date"], s_td), P(r["customer"], s_td),
                     P(r["platform"], s_td), P(r["payment_method"], s_td),
+                    P(r["reference_label"], s_td),
                     P(r["processed_by"], s_td), P(r["quantity"], s_td_c),
                     Paragraph(escape(_money(peso, r["total"])), s_td_r),
                     status_cell(r["status"])]
@@ -389,7 +391,7 @@ def build_history_pdf(path, rows, filters, tab="All Transactions", generated_by=
             story.append(status_subheading(status, f"{len(grp)} order{'s' if len(grp) != 1 else ''}",
                                            sum(o["total"] for o in grp)))
             story.append(group_table(grp, o_headers, o_widths, order_row,
-                                     total_col=7, qty_col=6, count_label="orders"))
+                                     total_col=8, qty_col=7, count_label="orders"))
             story.append(Spacer(1, 12))
 
     # ---------------- Inventory Purchases ---------------- #

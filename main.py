@@ -1,3 +1,4 @@
+import os
 import sys
 import ctypes
 from PyQt6.QtWidgets import QApplication
@@ -8,6 +9,8 @@ from views.main_window import MainWindow
 from controllers.auth_controller import AuthController
 from views.responsive import apply_ui_scale
 from views.message_box import install as install_modern_message_boxes
+from PyQt6.QtWidgets import QMessageBox
+from utils.errors import AppError, setup_logging, install_excepthook, log, friendly_message
 
 def apply_light_palette(app):
     """Forces the app's light colour scheme everywhere.
@@ -45,12 +48,14 @@ def apply_light_palette(app):
 
 
 def main():
+    setup_logging()
+    install_excepthook()
     # --- WINDOWS TASKBAR FIX ---
     # Forces Windows to recognize this script as a standalone app to show the icon
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("aetrends.pos.app.1")
-    except:
-        pass
+    except (AttributeError, OSError):
+        pass   # not on Windows; the taskbar tweak is optional
         
     # Pick a UI scale from this screen's size (must happen before QApplication)
     apply_ui_scale()
@@ -61,7 +66,10 @@ def main():
     install_modern_message_boxes()   # every QMessageBox.* call gets the modern card look
     
     # --- SET GLOBAL WINDOW ICON ---
-    app.setWindowIcon(QIcon("ae-logo.jpg"))
+    if os.path.exists("ae-logo.jpg"):
+        app.setWindowIcon(QIcon("ae-logo.jpg"))
+    else:
+        log.warning("ae-logo.jpg not found; using default icon")
     
     # --- GLOBAL FIGMA THEME RESET ---
     app.setStyleSheet("""
@@ -139,7 +147,12 @@ def main():
 
     # Initialize SQLite database with tables and sample data
     db = DatabaseManager("ae_trends.db")
-    db.init_db()
+    try:
+        db.init_db()
+    except Exception as exc:  # noqa: BLE001 - startup must explain, not crash
+        log.critical("Startup failed: %s", exc, exc_info=True)
+        QMessageBox.critical(None, "AE Trends cannot start", friendly_message(exc))
+        sys.exit(1)
 
     # Setup Views
     login_view = LoginView()

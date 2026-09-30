@@ -103,6 +103,7 @@ class LoginView(QWidget):
         l_layout.addWidget(l_title)
 
         self.username_input = QLineEdit()
+        self.username_input.setMaxLength(30)
         self.username_input.setPlaceholderText("e.g. sarah_trends")
         self.username_input.setText("admin")
         self.username_input.setStyleSheet(self.input_style)
@@ -111,6 +112,7 @@ class LoginView(QWidget):
         pass_layout = QHBoxLayout()
         pass_layout.setSpacing(8)
         self.password_input = QLineEdit()
+        self.password_input.setMaxLength(128)
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_input.setText("admin123")
         self.password_input.setStyleSheet(self.input_style)
@@ -164,16 +166,19 @@ class LoginView(QWidget):
         s_layout.addWidget(s_title)
 
         self.reg_name_input = QLineEdit()
+        self.reg_name_input.setMaxLength(100)
         self.reg_name_input.setPlaceholderText("Full Name")
         self.reg_name_input.setStyleSheet(self.input_style)
         s_layout.addLayout(field_group("Full Name", self.reg_name_input))
 
         self.reg_username_input = QLineEdit()
+        self.reg_username_input.setMaxLength(30)
         self.reg_username_input.setPlaceholderText("Desired Username")
         self.reg_username_input.setStyleSheet(self.input_style)
         s_layout.addLayout(field_group("Username", self.reg_username_input))
 
         self.reg_password_input = QLineEdit()
+        self.reg_password_input.setMaxLength(128)
         self.reg_password_input.setPlaceholderText("Password")
         self.reg_password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.reg_password_input.setStyleSheet(self.input_style)

@@ -1,5 +1,7 @@
 from PyQt6.QtWidgets import QMessageBox
 from views.product_dialog import ProductDialog
+from utils.errors import report, safe_slot
+from utils.validators import ValidationError
 
 class InventoryController:
     def __init__(self, model, view, on_data_changed=None, po_model=None):
@@ -23,6 +25,7 @@ class InventoryController:
         self.view.restore_product_requested.connect(self.restore_product)
         self.view.archive_product_requested.connect(lambda product: self.archive_product(product))
 
+    @safe_slot("Inventory Error")
     def load_products(self):
         search = self.view.search_input.text().strip()
         category = self.view.category_filter.currentText()
@@ -55,9 +58,11 @@ class InventoryController:
         else:
             self.load_products()
 
+    @safe_slot("Inventory Error")
     def open_add_product_dialog(self):
         self._open_product_dialog()
 
+    @safe_slot("Inventory Error")
     def open_edit_product_dialog(self, product):
         self.handle_edit_product(product)
 
@@ -106,10 +111,13 @@ class InventoryController:
             # duplicate row for the same product. Only Received purchase
             # orders can be picked, and receiving a PO already added its
             # quantity to the stock, so the stock is NOT increased again here.
-            existing = find_existing_by_name(item.get("product_name", ""))
-            if existing:
-                dialog.bind_to_existing_product(existing)
-                dialog.note_stock_already_counted(item.get("quantity", 0), item.get("po_number", ""))
+            try:
+                existing = find_existing_by_name(item.get("product_name", ""))
+                if existing:
+                    dialog.bind_to_existing_product(existing)
+                    dialog.note_stock_already_counted(item.get("quantity", 0), item.get("po_number", ""))
+            except Exception as exc:  # noqa: BLE001
+                report(exc, dialog, "Import Failed", context="on_po_item_picked")
 
         dialog.po_item_selected.connect(on_po_item_picked)
 
@@ -121,16 +129,16 @@ class InventoryController:
                 exp = values["expiration_date"]
                 image_value = values["image_path"]
 
-                if not name:
-                    raise ValueError("Product name is required.")
+                # Full rules live in InventoryModel._validate_product; this
+                # only converts the fields so the model gets real numbers.
+                if not (name or "").strip():
+                    raise ValidationError("Product name is required.")
                 try:
-                    price = float(values["price"])
-                    stock = int(values["stock_qty"])
-                    reorder = int(values["reorder_level"] or 10)
-                except ValueError:
-                    raise ValueError("Price, stock quantity and reorder level must be valid numbers.")
-                if price < 0 or stock < 0 or reorder < 0:
-                    raise ValueError("Price, stock quantity and reorder level cannot be negative.")
+                    price = float(str(values["price"]).replace(",", ""))
+                    stock = int(float(values["stock_qty"]))
+                    reorder = int(float(values["reorder_level"] or 10))
+                except (TypeError, ValueError):
+                    raise ValidationError("Price, stock quantity and reorder level must be valid numbers.")
 
                 target = dict(dialog.product)
                 if target.get("id") is None:
@@ -150,10 +158,10 @@ class InventoryController:
                                            supplier=values.get("supplier", ""))
                 dialog.accept()
                 self._notify_change()
-            except ValueError as e:
-                QMessageBox.warning(dialog, "Input Error", f"Please enter valid product values. {e}")
-            except Exception as error:
-                QMessageBox.critical(dialog, "Save Failed", f"Unable to save product: {error}")
+            except ValidationError as e:
+                QMessageBox.warning(dialog, "Input Error", str(e))
+            except Exception as error:  # noqa: BLE001
+                report(error, dialog, "Save Failed", context="save product")
 
         def archive():
             target = dict(dialog.product)
@@ -203,8 +211,8 @@ class InventoryController:
             return False
         try:
             self.model.archive_product(product["id"])
-        except Exception as error:
-            QMessageBox.critical(parent, "Archive Failed", str(error))
+        except Exception as error:  # noqa: BLE001
+            report(error, parent, "Archive Failed", context="archive_product")
             return False
         self._notify_change()
         return True
@@ -220,7 +228,7 @@ class InventoryController:
             return
         try:
             self.model.restore_product(product["id"])
-        except Exception as error:
-            QMessageBox.critical(self.view, "Restore Failed", str(error))
+        except Exception as error:  # noqa: BLE001
+            report(error, self.view, "Restore Failed", context="restore_product")
             return
         self._notify_change()

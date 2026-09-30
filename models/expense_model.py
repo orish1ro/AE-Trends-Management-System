@@ -7,6 +7,9 @@ Existing databases pick this up automatically; nothing needs to be
 re-installed.
 """
 
+from utils.validators import (ValidationError, check_choice, clean_date, clean_text,
+                              to_float, MAX_NOTES)
+
 CATEGORIES = ["Rent", "Utilities", "Salary", "Marketing", "Other"]
 
 
@@ -63,6 +66,10 @@ class ExpenseModel:
         return {row["d"]: row["Total"] or 0.0 for row in rows}
 
     def add_expense(self, category, amount, expense_date, notes=""):
+        category = check_choice(category, "Category", CATEGORIES)
+        amount = to_float(amount, "Amount", allow_zero=False, maximum=10_000_000)
+        expense_date = clean_date(expense_date, "Expense date", required=True)
+        notes = clean_text(notes, "Notes", required=False, max_len=MAX_NOTES)
         with self.db.get_connection() as conn:
             conn.execute(
                 "INSERT INTO Expense (Category, Amount, ExpenseDate, Notes) VALUES (?, ?, ?, ?)",

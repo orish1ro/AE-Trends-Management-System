@@ -1,5 +1,12 @@
+import os
+import shutil
 import sqlite3
+import uuid
 from datetime import datetime
+
+from utils.validators import (ValidationError, PAYMENT_METHODS, check_choice,
+                              check_order_transition, clean_name, clean_order_code,
+                              clean_phone, clean_text, to_float, to_int)
 
 def order_code(order_id):
     return f"ORD-{order_id:04d}"
@@ -49,7 +56,8 @@ class TransactionModel:
         query = """
             SELECT o.OrderID, o.OrderDate, o.TotalAmount, o.OrderStatus,
                    c.FullName AS CustomerName, pl.PlatformName, pm.PaymentMethod,
-                   GROUP_CONCAT(pr.ProductName || ' (x' || od.Quantity || ')', ', ') AS ItemsBought
+                   GROUP_CONCAT(pr.ProductName || ' (x' || od.Quantity || ')', ', ') AS ItemsBought,
+                   GROUP_CONCAT(pr.ProductName || ' (x' || od.Quantity || ')', char(31)) AS ItemsList
             FROM Orders o
             JOIN Customer c ON c.CustomerID = o.CustomerID
             JOIN Platform pl ON pl.PlatformID = o.PlatformID
@@ -81,6 +89,9 @@ class TransactionModel:
                 "order_code": order_code(r["OrderID"]),
                 "customer_name": r["CustomerName"],
                 "items": r["ItemsBought"] if r["ItemsBought"] else "None",
+                # One entry per product (split on an invisible separator so a
+                # product name containing a comma can never be cut in half).
+                "item_list": r["ItemsList"].split("\x1f") if r["ItemsList"] else [],
                 "order_type": r["PlatformName"],
                 "order_date": nice_date(r["OrderDate"]),
                 "total_amount": r["TotalAmount"],
@@ -122,32 +133,21 @@ class TransactionModel:
         ]
 
     def update_order_status(self, order_code, new_status):
-        """Updates an order status safely."""
-        allowed_status = [
-            "Pending",
-            "Paid",
-            "Prepared",
-            "Shipped",
-            "Completed",
-            "Refunded",
-            "Cancelled"
-        ]
-
-        if new_status not in allowed_status:
-            return False
-
-        try:
-            order_id = int(order_code.split("-")[1])
-        except (ValueError, IndexError):
-            return False
+        """Updates an order status. Raises ValidationError for a bad code,
+        a missing order, or a move that is not allowed (for example changing
+        a Cancelled order back to Pending). Returns True when saved."""
+        order_id = clean_order_code(order_code, "ORD")
 
         with self.db.get_connection() as conn:
             row = conn.execute(
                 "SELECT OrderStatus FROM Orders WHERE OrderID = ?", (order_id,)
             ).fetchone()
             if row is None:
-                return False
+                raise ValidationError(f"Order {order_code} was not found.")
             old_status = row["OrderStatus"]
+            if old_status == new_status:
+                return True          # nothing to do; never touch stock twice
+            check_order_transition(old_status, new_status)
 
             conn.execute(
                 "UPDATE Orders SET OrderStatus = ? WHERE OrderID = ?",
@@ -155,9 +155,9 @@ class TransactionModel:
             )
 
             # Stock is taken out when the order is created, so a cancelled
-            # order must put its items back. Only do it once (old_status
-            # check) so cancelling twice can never add stock twice.
-            if new_status == "Cancelled" and old_status != "Cancelled":
+            # order must put its items back. The transition check above
+            # guarantees this runs once: Cancelled can never be left again.
+            if new_status == "Cancelled":
                 conn.execute(
                     """UPDATE Product
                        SET StockQuantity = StockQuantity + (
@@ -210,47 +210,121 @@ class TransactionModel:
         )
         return cur.lastrowid
 
+    def _validate_cart(self, conn, cart_items):
+        """Re-reads every product from the database. The price and stock the
+        screen sent are never trusted: the database values win."""
+        if not cart_items:
+            raise ValidationError("Please add at least one product.")
+        clean, seen = [], set()
+        for item in cart_items:
+            try:
+                pid = int(item["id"])
+            except (KeyError, TypeError, ValueError):
+                raise ValidationError("A product in the cart is invalid. Remove it and add it again.")
+            qty = to_int(item.get("qty"), "Quantity", minimum=1, allow_zero=False, maximum=10_000)
+            if pid in seen:
+                raise ValidationError("The same product appears twice in the cart.")
+            seen.add(pid)
+            prod = conn.execute(
+                "SELECT ProductName, Price, StockQuantity, COALESCE(IsArchived,0) AS Arch, "
+                "COALESCE(IsPendingReceipt,0) AS Pend FROM Product WHERE ProductID = ?",
+                (pid,)).fetchone()
+            if prod is None or prod["Arch"] or prod["Pend"]:
+                raise ValidationError("A product in the cart is no longer available. "
+                                      "Refresh the catalog and try again.")
+            if qty > (prod["StockQuantity"] or 0):
+                raise ValidationError(
+                    f"Not enough stock for {prod['ProductName']}: "
+                    f"{prod['StockQuantity']} left, {qty} requested.")
+            clean.append({"id": pid, "qty": qty, "price": float(prod["Price"])})
+        return clean
+
+    def _store_receipt(self, source_path):
+        """Copies the chosen receipt into a `receipts` folder next to the database
+        so it survives the original file being moved or deleted. Returns the path
+        relative to the database folder (what gets saved in the Payment table)."""
+        if not source_path:
+            return ""
+        if not os.path.isfile(source_path):
+            raise ValidationError("The receipt image could not be found. Please choose it again.")
+        base = os.path.dirname(os.path.abspath(self.db.db_path))
+        folder = os.path.join(base, "receipts")
+        os.makedirs(folder, exist_ok=True)
+        ext = os.path.splitext(source_path)[1].lower() or ".png"
+        name = f"receipt_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}{ext}"
+        shutil.copyfile(source_path, os.path.join(folder, name))
+        return f"receipts/{name}"
+
     def create_order(self, customer_name, customer_phone, address, order_type,
                       total, payment_method, cart_items, amount_paid=None,
                       reference_number="", receipt_image=""):
+        customer_name = clean_name(customer_name, "Customer name", required=False)
+        customer_phone = clean_phone(customer_phone, "Contact number")
+        address = clean_text(address, "Delivery address", required=False, max_len=255)
+        order_type = clean_text(order_type, "Platform", max_len=50)
+        payment_method = check_choice(payment_method, "Payment method", PAYMENT_METHODS)
+        reference_number = clean_text(reference_number, "Reference number",
+                                      required=False, max_len=50)
+        receipt_image = clean_text(receipt_image, "Receipt image", required=False, max_len=500)
+        if order_type != "Walk-in" and not (customer_name and customer_phone and address):
+            raise ValidationError("Online orders need a customer name, contact number and address.")
+
         with self.db.get_connection() as conn:
+            cart = self._validate_cart(conn, cart_items)
+            # Recompute the total from database prices; ignore the screen's number.
+            real_total = round(sum(i["price"] * i["qty"] for i in cart), 2)
+            if abs(real_total - float(total or 0)) > 0.01:
+                raise ValidationError("Prices changed since the cart was built. "
+                                      "Refresh the catalog and try again.")
+            paid = real_total if amount_paid is None else to_float(amount_paid, "Amount paid")
+            if payment_method == "Cash" and paid + 1e-9 < real_total:
+                raise ValidationError("Amount paid must cover the transaction total.")
+            if payment_method != "Cash" and not (reference_number or receipt_image):
+                raise ValidationError("Please enter a reference number or upload a receipt image.")
+
+            # Copy the receipt only after every check above has passed.
+            receipt_image = self._store_receipt(receipt_image)
+
             customer_id = self._find_or_create_customer(conn, customer_name,
                                                         customer_phone, address)
             platform_id = self._platform_id_for(conn, order_type)
-            
+
             # Flow enforcement: Send all new transactions to Order Status first
-            initial_status = "Pending" 
+            initial_status = "Pending"
 
             order_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cur = conn.execute(
                 """INSERT INTO Orders (CustomerID, StaffID, PlatformID, TotalAmount,
                                        OrderStatus, DeliveryAddress, OrderDate)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (customer_id, self.staff_id, platform_id, total, initial_status,
+                (customer_id, self.staff_id, platform_id, real_total, initial_status,
                  address or None, order_date),
             )
             order_id = cur.lastrowid
 
-            for item in cart_items:
-                subtotal = item["price"] * item["qty"]
+            for item in cart:
                 conn.execute(
                     """INSERT INTO OrderDetails (OrderID, ProductID, Quantity,
                                                  UnitPriceAtOrder, Subtotal)
                        VALUES (?, ?, ?, ?, ?)""",
-                    (order_id, item["id"], item["qty"], item["price"], subtotal),
+                    (order_id, item["id"], item["qty"], item["price"],
+                     round(item["price"] * item["qty"], 2)),
                 )
-                conn.execute(
-                    "UPDATE Product SET StockQuantity = StockQuantity - ? WHERE ProductID = ?",
-                    (item["qty"], item["id"]),
-                )
+                # Guarded update: fails cleanly if another copy sold the stock first.
+                changed = conn.execute(
+                    "UPDATE Product SET StockQuantity = StockQuantity - ? "
+                    "WHERE ProductID = ? AND StockQuantity >= ?",
+                    (item["qty"], item["id"], item["qty"]),
+                ).rowcount
+                if changed != 1:
+                    raise ValidationError("Stock changed while saving. Refresh and try again.")
 
             conn.execute(
                 """INSERT INTO Payment (OrderID, PaymentMethod, AmountPaid,
                                         PaymentStatus, ReferenceNumber,
                                         ReceiptImageURL)
                    VALUES (?, ?, ?, 'Paid', ?, ?)""",
-                (order_id, payment_method,
-                 total if amount_paid is None else amount_paid,
+                (order_id, payment_method, paid,
                  reference_number or None, receipt_image or None),
             )
             conn.commit()
@@ -292,19 +366,33 @@ class TransactionModel:
                 "history": [dict(row) for row in items]
             }
             
+    def _resolve_receipt_path(self, stored):
+        """Receipts are stored relative to the database folder (new orders) or
+        as a full path (older orders). Returns an existing file path or ''."""
+        if not stored:
+            return ""
+        candidates = [stored]
+        if not os.path.isabs(stored):
+            base = os.path.dirname(os.path.abspath(self.db.db_path))
+            candidates.insert(0, os.path.join(base, stored))
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return ""
+
     def get_order_detail(self, order_code):
         """Fetches complete professional details for a specific order."""
         try:
-            order_id = int(order_code.split('-')[1])
-        except (ValueError, IndexError):
+            order_id = clean_order_code(order_code, "ORD")
+        except ValidationError:
             return None
-            
+
         with self.db.get_connection() as conn:
             header = conn.execute("""
                 SELECT o.OrderID, o.OrderDate, o.OrderStatus, o.TotalAmount, o.DeliveryAddress,
                        c.FullName AS CustomerName, c.ContactNumber, pl.PlatformName,
                        st.Name AS StaffName, p.PaymentMethod, p.PaymentStatus, p.PaymentDate,
-                       p.ReferenceNumber
+                       p.ReferenceNumber, p.ReceiptImageURL
                 FROM Orders o
                 JOIN Customer c ON c.CustomerID = o.CustomerID
                 JOIN Platform pl ON pl.PlatformID = o.PlatformID
@@ -324,7 +412,9 @@ class TransactionModel:
                 ORDER BY od.OrderDetailsID
             """, (order_id,)).fetchall()
 
+        stored_receipt = header["ReceiptImageURL"] or ""
         return {
+            "id": order_id,
             "code": order_code,
             "customer": header["CustomerName"],
             "contact": header["ContactNumber"] or "-",
@@ -335,6 +425,8 @@ class TransactionModel:
             "payment_method": header["PaymentMethod"] or "-",
             "payment_status": header["PaymentStatus"] or "Unpaid",
             "payment_reference": header["ReferenceNumber"] or "-",
+            "receipt_stored": stored_receipt,
+            "receipt_path": self._resolve_receipt_path(stored_receipt),
             "status": header["OrderStatus"],
             "items": [
                 {

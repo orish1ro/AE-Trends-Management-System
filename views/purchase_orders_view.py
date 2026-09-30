@@ -3,10 +3,11 @@ from PyQt6.QtWidgets import (
     QPushButton, QFrame, QTableWidget, QTableWidgetItem, QHeaderView,
     QDialog, QMessageBox, QScrollArea, QMenu, QSizePolicy, QButtonGroup
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QRegularExpression
+from PyQt6.QtCore import Qt, pyqtSignal, QRegularExpression, QDate
 from PyQt6.QtGui import QRegularExpressionValidator
 from datetime import datetime
 from views.styled_dropdown import StyledComboBox
+from views.transaction_history_view import ArrowDateEdit, FILTER_CONTROL_STYLE
 from views.responsive import clamp_dialog_min
 
 
@@ -37,6 +38,16 @@ GOLD_BG2 = "#FBF4E8"
 
 PENDING_TXT, PENDING_BG, PENDING_BORDER = "#B45309", "#FFF9E8", "#C97816"
 RECEIVED_TXT, RECEIVED_BG, RECEIVED_BORDER = "#118443", "#F2FFF6", "#22A05A"
+CANCELLED_TXT, CANCELLED_BG, CANCELLED_BORDER = "#B42318", "#FDECEC", "#E08A8A"
+
+
+def status_colors(status):
+    """(text, background, border) colours for a purchase-order status badge."""
+    if status == "Pending":
+        return PENDING_TXT, PENDING_BG, PENDING_BORDER
+    if status == "Cancelled":
+        return CANCELLED_TXT, CANCELLED_BG, CANCELLED_BORDER
+    return RECEIVED_TXT, RECEIVED_BG, RECEIVED_BORDER
 
 PLAIN_LABEL_STYLE = f"font-size: 12px; color: {TEXT_MUTED}; {RESET}"
 TABLE_HEAD_STYLE = (
@@ -119,9 +130,26 @@ def labeled_field(label_text, widget, required=False):
     return box
 
 
+CALENDAR_STYLE = """
+    QCalendarWidget QWidget { alternate-background-color: #FAF8F3; background-color: #FFFFFF; color: #2A2421; }
+    QCalendarWidget QWidget#qt_calendar_navigationbar { background-color: #F3EEE3; border: none; }
+    QCalendarWidget QToolButton { color: #2A2421; background-color: transparent; border: none;
+                                  border-radius: 5px; padding: 6px 8px; font-weight: 600; }
+    QCalendarWidget QToolButton:hover { background-color: #E8E0D0; }
+    QCalendarWidget QMenu { color: #2A2421; background-color: #FFFFFF; border: 1px solid #D9D2C2; }
+    QCalendarWidget QSpinBox { color: #2A2421; background-color: #FFFFFF; border: 1px solid #D9D2C2;
+                               border-radius: 4px; padding: 3px 6px; min-width: 60px; }
+    QCalendarWidget QAbstractItemView { color: #2A2421; background-color: #FFFFFF;
+                                        selection-background-color: #C09E3B; selection-color: #FFFFFF;
+                                        outline: 0; border: none; }
+    QCalendarWidget QAbstractItemView:disabled { color: #B8B1A6; }
+"""
+
+
 class PurchaseOrdersView(QWidget):
     order_details_requested = pyqtSignal(str)
     mark_received_requested = pyqtSignal(str)
+    cancel_requested = pyqtSignal(str)
     submit_order_requested = pyqtSignal(dict)
     panel_open_requested = pyqtSignal()
     manage_suppliers_requested = pyqtSignal()
@@ -201,7 +229,7 @@ class PurchaseOrdersView(QWidget):
         search_layout.setContentsMargins(10, 0, 10, 0)
         search_layout.setSpacing(6)
 
-        search_icon = QLabel("🔍")
+        search_icon = QLabel("")
         search_icon.setStyleSheet(RESET)
 
         self.search_input = QLineEdit()
@@ -218,9 +246,11 @@ class PurchaseOrdersView(QWidget):
         self.status_filter_all = QPushButton("All")
         self.status_filter_pending = QPushButton("Pending")
         self.status_filter_received = QPushButton("Received")
+        self.status_filter_cancelled = QPushButton("Cancelled")
 
         self.status_filter_group = QButtonGroup(self)
-        for btn in (self.status_filter_all, self.status_filter_pending, self.status_filter_received):
+        for btn in (self.status_filter_all, self.status_filter_pending,
+                    self.status_filter_received, self.status_filter_cancelled):
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet("""
@@ -229,7 +259,8 @@ class PurchaseOrdersView(QWidget):
             """)
             btn.clicked.connect(self._apply_filters)
             self.status_filter_group.addButton(btn)
-        self.status_filter_all.setChecked(True)
+        # The page always opens on Pending - those are the orders that need action.
+        self.status_filter_pending.setChecked(True)
 
         self.date_range_filter = SupplierComboBox()
         self.date_range_filter.addItems(["Date Range", "All Time"])
@@ -249,6 +280,7 @@ class PurchaseOrdersView(QWidget):
         row.addWidget(self.status_filter_all)
         row.addWidget(self.status_filter_pending)
         row.addWidget(self.status_filter_received)
+        row.addWidget(self.status_filter_cancelled)
         row.addWidget(self.date_range_filter)
         row.addWidget(self.manage_suppliers_btn)
         row.addWidget(self.new_po_btn)
@@ -513,11 +545,12 @@ class PurchaseOrdersView(QWidget):
         supplier_row.addWidget(add_sup_btn, alignment=Qt.AlignmentFlag.AlignBottom)
         layout.addLayout(supplier_row)
 
-        # -- Expected delivery date --------------------------------------
-        self.date_input = QLineEdit()
-        self.date_input.setPlaceholderText("mm/dd/yyyy")
-        self.date_input.setText(datetime.now().strftime("%m/%d/%Y"))
-        self.date_input.setStyleSheet(FIELD_STYLE)
+        # -- Expected delivery date (calendar drop-down) -----------------
+        self.date_input = ArrowDateEdit(calendarPopup=True)
+        self.date_input.setDisplayFormat("MM/dd/yyyy")
+        self.date_input.setStyleSheet(FILTER_CONTROL_STYLE + CALENDAR_STYLE)
+        self.date_input.calendarWidget().setStyleSheet(CALENDAR_STYLE)
+        self._refresh_delivery_date()
         layout.addLayout(labeled_field("Expected Delivery Date", self.date_input, required=True))
 
         divider = self._hline()
@@ -629,7 +662,7 @@ class PurchaseOrdersView(QWidget):
         )
         note_layout = QHBoxLayout(note)
         note_layout.setContentsMargins(10, 8, 10, 8)
-        note_icon = QLabel("ℹ️")
+        note_icon = QLabel("ℹ")
         note_icon.setStyleSheet(RESET)
         note_text = QLabel(
             "This is a purchase order record. The actual ordering will be "
@@ -667,7 +700,7 @@ class PurchaseOrdersView(QWidget):
         cancel_btn.setStyleSheet(GHOST_BTN_STYLE)
         cancel_btn.clicked.connect(lambda: self._set_side_panel_open(False))
 
-        self.submit_po_btn = QPushButton("💾 Save Purchase Order")
+        self.submit_po_btn = QPushButton("Save Purchase Order")
         self.submit_po_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.submit_po_btn.setStyleSheet(GOLD_FILLED_BTN_STYLE)
         self.submit_po_btn.clicked.connect(self._validate_and_submit)
@@ -716,6 +749,7 @@ class PurchaseOrdersView(QWidget):
         # current inventory before the panel is shown, so newly added
         # or updated products are always available to pick from.
         self.panel_open_requested.emit()
+        self.date_input.setMinimumDate(QDate.currentDate())
         self._set_side_panel_open(True)
 
     def set_available_products(self, products):
@@ -737,6 +771,13 @@ class PurchaseOrdersView(QWidget):
         if not is_open:
             self._reset_order_form()
 
+    def _refresh_delivery_date(self):
+        """Today is the earliest allowed date (re-checked each time the form opens,
+        in case the app has been left running overnight)."""
+        today = QDate.currentDate()
+        self.date_input.setMinimumDate(today)
+        self.date_input.setDate(today)
+
     def _reset_order_form(self):
         for row in list(self.item_rows):
             self.dynamic_items_layout.removeWidget(row["widget"])
@@ -744,7 +785,7 @@ class PurchaseOrdersView(QWidget):
         self.item_rows = []
         self.empty_state_widget.setVisible(True)
         self.supplier_combo.setCurrentIndex(0)
-        self.date_input.setText(datetime.now().strftime("%m/%d/%Y"))
+        self._refresh_delivery_date()
         self._update_items_count_label()
         self._recalculate_totals()
 
@@ -958,13 +999,6 @@ class PurchaseOrdersView(QWidget):
                 QMessageBox.warning(self, "Validation Error", "Please select a supplier.")
                 return
 
-            delivery_date = self.date_input.text().strip()
-            if not delivery_date:
-                QMessageBox.warning(
-                    self, "Validation Error", "Please enter an expected delivery date."
-                )
-                return
-
             items_to_order = []
             for row in self.item_rows:
                 prod_name = row["combo"].currentText().strip()
@@ -1021,7 +1055,8 @@ class PurchaseOrdersView(QWidget):
                 return
 
             order_data = {
-                "supplier": supplier, "expected_date": delivery_date,
+                "supplier": supplier,
+                "expected_date": self.date_input.date().toString("yyyy-MM-dd"),
                 "items": items_to_order,
             }
             self.submit_order_requested.emit(order_data)
@@ -1041,12 +1076,19 @@ class PurchaseOrdersView(QWidget):
         self.current_page = 1
         self._apply_filters()
 
+    def reset_to_pending(self):
+        """Called whenever the Purchase Orders page is opened."""
+        self.status_filter_pending.setChecked(True)
+        self._apply_filters()
+
     def _apply_filters(self):
         search_text = self.search_input.text().strip().lower()
         if self.status_filter_pending.isChecked():
             status = "Pending"
         elif self.status_filter_received.isChecked():
             status = "Received"
+        elif self.status_filter_cancelled.isChecked():
+            status = "Cancelled"
         else:
             status = "All Status"
 
@@ -1092,18 +1134,12 @@ class PurchaseOrdersView(QWidget):
             status_badge = QLabel(po["status"])
             status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
             status_badge.setFixedHeight(22)
-            if po["status"] == "Pending":
-                status_badge.setStyleSheet(
-                    f"color: {PENDING_TXT}; background: {PENDING_BG}; "
-                    f"border: 1px solid {PENDING_BORDER}; border-radius: 5px; "
-                    "padding: 0 7px; font-size: 10px;"
-                )
-            else:
-                status_badge.setStyleSheet(
-                    f"color: {RECEIVED_TXT}; background: {RECEIVED_BG}; "
-                    f"border: 1px solid {RECEIVED_BORDER}; border-radius: 5px; "
-                    "padding: 0 7px; font-size: 10px;"
-                )
+            txt, bg, border = status_colors(po["status"])
+            status_badge.setStyleSheet(
+                f"color: {txt}; background: {bg}; "
+                f"border: 1px solid {border}; border-radius: 5px; "
+                "padding: 0 7px; font-size: 10px;"
+            )
             self.history_table.setCellWidget(row, 4, status_badge)
             self.history_table.setCellWidget(
                 row, 5, self._build_action_cell(po)
@@ -1116,6 +1152,17 @@ class PurchaseOrdersView(QWidget):
         self.page_indicator.setText(str(self.current_page))
         self.prev_page_btn.setEnabled(self.current_page > 1)
         self.next_page_btn.setEnabled(self.current_page < total_pages)
+
+    def _confirm_cancel(self, po_number):
+        reply = QMessageBox.question(
+            self, "Cancel Purchase Order",
+            f"Cancel {po_number}?\n\nNo stock will be added to inventory. "
+            "This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.cancel_requested.emit(po_number)
 
     def _build_action_cell(self, po):
         cell = QWidget()
@@ -1175,6 +1222,12 @@ class PurchaseOrdersView(QWidget):
             lambda checked=False, po_number=po["po_number"]:
             self.mark_received_requested.emit(po_number)
         )
+        cancel_action = menu.addAction("Cancel Order")
+        cancel_action.setEnabled(po["status"] == "Pending")
+        cancel_action.triggered.connect(
+            lambda checked=False, po_number=po["po_number"]:
+            self._confirm_cancel(po_number)
+        )
         more_btn.clicked.connect(
             lambda: menu.exec(
                 more_btn.mapToGlobal(more_btn.rect().bottomLeft())
@@ -1230,18 +1283,12 @@ class PurchaseOrdersView(QWidget):
         order_header.addStretch()
 
         order_status = QLabel(details["status"])
-        if details["status"] == "Pending":
-            order_status.setStyleSheet(
-                f"color: {PENDING_TXT}; background: {PENDING_BG}; "
-                f"border: 1px solid {PENDING_BORDER}; border-radius: 5px; "
-                "padding: 3px 9px; font-size: 10px;"
-            )
-        else:
-            order_status.setStyleSheet(
-                f"color: {RECEIVED_TXT}; background: {RECEIVED_BG}; "
-                f"border: 1px solid {RECEIVED_BORDER}; border-radius: 5px; "
-                "padding: 3px 9px; font-size: 10px;"
-            )
+        txt, bg, border = status_colors(details["status"])
+        order_status.setStyleSheet(
+            f"color: {txt}; background: {bg}; "
+            f"border: 1px solid {border}; border-radius: 5px; "
+            "padding: 3px 9px; font-size: 10px;"
+        )
 
         order_header.addWidget(order_status)
         card_layout.addLayout(order_header)

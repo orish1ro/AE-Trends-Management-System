@@ -196,6 +196,9 @@ class MainWindow(QMainWindow):
     def switch_view(self, index):
         for btn, idx in self.nav_btns:
             btn.setChecked(idx == index)
+        if index == 3:
+            # Purchase Orders always opens on the Pending list
+            self.purchase_orders_view.reset_to_pending()
         self.stacked_widget.setCurrentIndex(index)
 
     def set_user(self, name, role):
