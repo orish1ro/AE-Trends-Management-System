@@ -10,6 +10,7 @@ from PyQt6.QtGui import QColor
 # The order-details pop-up is shared with Transaction History so both pages
 # show the same modern layout (defined in views/transaction_history_view.py).
 from views.transaction_history_view import OrderDetailDialog  # noqa: F401
+from views.ui_icons import svg_icon
 
 LABEL_RESET = "background: transparent; border: none;"
 
@@ -178,10 +179,13 @@ class OrderStatusView(QWidget):
         self.page_size = 10
         self.current_page = 1
         self.all_orders = []
+        self._rows_by_order = {}
 
         pagination_layout = QHBoxLayout()
-        self.btn_prev_page = QPushButton("◀ Prev")
-        self.btn_next_page = QPushButton("Next ▶")
+        self.btn_prev_page = QPushButton("Prev")
+        self.btn_prev_page.setIcon(svg_icon("chevron-left", "#444444", 16))
+        self.btn_next_page = QPushButton("Next")
+        self.btn_next_page.setIcon(svg_icon("chevron-right", "#444444", 16))
         self.page_label = QLabel("Page 1 of 1")
 
         for btn in (self.btn_prev_page, self.btn_next_page):
@@ -265,6 +269,7 @@ class OrderStatusView(QWidget):
         self._render_rows(page_orders, row_offset=start)
 
     def _render_rows(self, orders, row_offset=0):
+        self._rows_by_order.clear()
         self.table.setRowCount(len(orders))
         # Row numbers continue across pages (page 2 starts at 11, 12, ...)
         # instead of resetting back to 1 on every page.
@@ -293,8 +298,15 @@ class OrderStatusView(QWidget):
             if is_in_progress:
                 # Interactive Dropdown - only for orders still in the active queue.
                 combo = QComboBox()
-                combo.addItems(["Pending", "Paid", "Prepared", "Shipped", "Cancelled"])
-                combo.setCurrentText(ord_item['status'])
+                status_options = (["Paid", "Cancelled"]
+                                  if ord_item['order_type'] == "Walk-in"
+                                  else ["Pending", "Shipped", "Cancelled"])
+                combo.addItems(status_options)
+                current_status_index = combo.findText(ord_item['status'])
+                if current_status_index < 0:
+                    default_status = "Paid" if ord_item['order_type'] == "Walk-in" else "Pending"
+                    current_status_index = combo.findText(default_status)
+                combo.setCurrentIndex(current_status_index)
                 combo.setStyleSheet("""
                     QComboBox { combobox-popup: 0; padding: 4px; border: 1px solid #D9D2C2; border-radius: 4px; background: white; color: #2A2421;}
                     QComboBox::drop-down { border: none; width: 20px; }
@@ -320,10 +332,13 @@ class OrderStatusView(QWidget):
             btn = QPushButton("Confirm Transaction" if is_in_progress else "View")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self._style_action_button(btn, is_cancel_style=False)
+            if is_in_progress:
+                self._update_action_button(btn, ord_item['order_type'], combo.currentText())
 
             if is_in_progress:
                 combo.currentTextChanged.connect(
-                    lambda text, oc=order_code, cb=combo, b=btn: self._on_status_choice(oc, text, cb, b)
+                    lambda text, oc=order_code, cb=combo, b=btn, platform=ord_item['order_type']:
+                    self._on_status_choice(oc, text, cb, b, platform)
                 )
             btn.clicked.connect(
                 lambda checked, oc=order_code, cb=combo, ip=is_in_progress: self._on_action_clicked(oc, cb, ip)
@@ -335,6 +350,50 @@ class OrderStatusView(QWidget):
             btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             btn_layout.addWidget(btn)
             self.table.setCellWidget(row, 7, btn_container)
+            self._rows_by_order[order_code] = {
+                "row": row,
+                "combo": combo,
+                "button": btn,
+                "platform": ord_item["order_type"],
+                "status": ord_item["status"],
+            }
+
+    def update_order_status(self, order_code, status):
+        """Update only the rendered row identified by its stable order code."""
+        row_state = self._rows_by_order.get(order_code)
+        if row_state is None:
+            return False
+
+        row_state["status"] = status
+        for order in self.all_orders:
+            if order["order_code"] == order_code:
+                order["status"] = status
+                break
+
+        combo = row_state["combo"]
+        if combo is not None and combo.findText(status) >= 0:
+            combo.blockSignals(True)
+            combo.setCurrentText(status)
+            combo.blockSignals(False)
+        if combo is not None:
+            self._update_action_button(
+                row_state["button"], row_state["platform"], combo.currentText())
+        return True
+
+    def restore_order_status(self, order_code):
+        """Restore one row's last persisted status after a failed update."""
+        row_state = self._rows_by_order.get(order_code)
+        if row_state is None:
+            return False
+        status = row_state["status"]
+        combo = row_state["combo"]
+        if combo is not None and combo.findText(status) >= 0:
+            combo.blockSignals(True)
+            combo.setCurrentText(status)
+            combo.blockSignals(False)
+            self._update_action_button(
+                row_state["button"], row_state["platform"], status)
+        return True
 
     def _style_action_button(self, btn, is_cancel_style):
         if is_cancel_style:
@@ -348,17 +407,29 @@ class OrderStatusView(QWidget):
                 QPushButton:hover { background-color: #B18F2E; }
             """)
 
-    def _on_status_choice(self, order_code, new_text, combo, btn):
+    def _update_action_button(self, btn, platform, status):
+        if status == "Cancelled":
+            btn.setText("Confirm Cancellation")
+            btn.setEnabled(True)
+            btn.setVisible(True)
+            self._style_action_button(btn, is_cancel_style=True)
+            return
+
+        can_confirm = ((platform == "Walk-in" and status == "Paid")
+                       or (platform != "Walk-in" and status == "Shipped"))
+        btn.setText("Confirm Transaction")
+        btn.setEnabled(can_confirm)
+        btn.setVisible(can_confirm)
+        self._style_action_button(btn, is_cancel_style=False)
+
+    def _on_status_choice(self, order_code, new_text, combo, btn, platform):
         """Fires whenever the dropdown value changes. Cancelled is staged
         only (button turns into Confirm Cancellation, nothing saved yet).
         Any other value still saves immediately, like before."""
+        self._update_action_button(btn, platform, new_text)
         if new_text == "Cancelled":
-            btn.setText("Confirm Cancellation")
-            self._style_action_button(btn, is_cancel_style=True)
-        else:
-            btn.setText("Confirm Transaction")
-            self._style_action_button(btn, is_cancel_style=False)
-            self.status_changed.emit(order_code, new_text)
+            return
+        self.status_changed.emit(order_code, new_text)
 
     def _on_action_clicked(self, order_code, combo, was_in_progress):
         """The single save point. Reads whatever is currently staged in the

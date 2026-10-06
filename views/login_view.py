@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 from views.responsive import fit_window
+from utils.paths import resource_path
 
 FIELD_LABEL_STYLE = "font-size: 12px; font-weight: 600; color: #8A8074; border: none; background: transparent;"
 
@@ -36,7 +37,7 @@ class LoginView(QWidget):
 
         # --- LOGO ---
         logo_label = QLabel()
-        pixmap = QPixmap("ae-logo.jpg")
+        pixmap = QPixmap(resource_path("ae-logo.jpg"))
         if not pixmap.isNull():
             scaled_pixmap = pixmap.scaled(220, 220, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             logo_label.setPixmap(scaled_pixmap)

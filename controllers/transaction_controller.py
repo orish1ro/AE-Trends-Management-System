@@ -69,8 +69,9 @@ class TransactionController:
                 self.record_view.show_form_error("Contact number is required for online orders.")
                 return
 
-            if is_online and not re.fullmatch(r"\+?\d{10,15}", cust_phone):
-                self.record_view.show_form_error("Invalid contact number format.")
+            if cust_phone and not re.fullmatch(r"[0-9]{11}", cust_phone):
+                self.record_view.show_form_error(
+                    "Contact Number must be exactly 11 digits.")
                 return
 
             if is_online and not address:
@@ -99,7 +100,7 @@ class TransactionController:
             # if is_online and payment["method"] != "Cash" and not payment["reference_number"]:
             #     self.record_view.show_form_error("Reference number is required for electronic payments.")
             #     return
-            # NEW: for GCash / Online Banking (walk-in or online), at least ONE of
+            # For non-cash payments (walk-in or online), at least ONE of
             # the reference number or the receipt image must be provided.
             if (payment["method"] != "Cash"
                     and not payment["reference_number"]
@@ -197,7 +198,18 @@ class TransactionController:
             self.load_orders()
             return
 
-        self._change_status(order_code, new_status, "", "")
+        try:
+            success = self.txn_model.update_order_status(order_code, new_status)
+        except Exception as exc:  # noqa: BLE001
+            report(exc, self.status_view, "Order Update Failed",
+                   context=f"{order_code}->{new_status}")
+            self.status_view.restore_order_status(order_code)
+            return
+
+        if success:
+            self.status_view.update_order_status(order_code, new_status)
+            if self.on_order_saved:
+                self.on_order_saved()
 
     @safe_slot("Order Details Error", parent_attr="status_view")
     def open_order_popup(self, order_code):

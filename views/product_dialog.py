@@ -14,6 +14,9 @@ from PyQt6.QtGui import QColor
 from views.styled_dropdown import StyledComboBox
 from views.responsive import screen_width_cap
 from views.inventory_view import Thumb
+from views.ui_icons import set_svg_icon, svg_icon
+from utils.product_images import compress_product_image
+from utils.validators import ValidationError
 
 RESET = "background: transparent; border: none;"
 
@@ -118,7 +121,7 @@ STATUS_PILL = {
 
 # Picker badge: is the PO item's product already in Inventory?  state -> (text, bg, fg)
 INVENTORY_PILL = {
-    "in_inventory": ("✓ In inventory", "#E4F2E9", "#2F7A4A"),
+    "in_inventory": ("In inventory", "#E4F2E9", "#2F7A4A"),
     "archived": ("Archived", "#EDEAE3", "#6B655A"),
     "not_added": ("Not added yet", "#FBF0D5", "#8A6D1F"),
 }
@@ -346,7 +349,6 @@ class PoItemPicker(QPushButton):
         return super().eventFilter(obj, event)
 
 
-MAX_IMAGE_BYTES = 5 * 1024 * 1024
 EXP_CHECKBOX_STYLE = (
     "QCheckBox { spacing: 8px; font-size: 12px; font-weight: 600; color: #5E554C; }"
     "QCheckBox::indicator { width: 17px; height: 17px; border-radius: 5px;"
@@ -425,7 +427,8 @@ class ProductDialog(QDialog):
 
         # -- Header ------------------------------------------------------
         header_row = QHBoxLayout()
-        icon = QLabel("📦" if not self.is_edit else "✎")
+        icon = QLabel()
+        set_svg_icon(icon, "pencil" if self.is_edit else "package", GOLD_HOVER, 22)
         icon.setFixedSize(46, 46)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setStyleSheet(f"background: {GOLD_BG2}; border-radius: 23px; font-size: 19px;")
@@ -472,7 +475,9 @@ class ProductDialog(QDialog):
         self.cancel_btn.setStyleSheet(GHOST_BTN_STYLE)
         self.cancel_btn.clicked.connect(self.reject)
 
-        self.save_btn = QPushButton("Save Product" if self.is_edit else "✓  Add Product")
+        self.save_btn = QPushButton("Save Product" if self.is_edit else "Add Product")
+        if not self.is_edit:
+            self.save_btn.setIcon(svg_icon("check", "#FFFFFF", 17))
         self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.save_btn.setStyleSheet(GOLD_FILLED_BTN_STYLE)
         btn_row.addWidget(self.cancel_btn)
@@ -553,15 +558,19 @@ class ProductDialog(QDialog):
         ul.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ul.setSpacing(4)
         for text, css in (
-            ("🖼", "font-size: 20px;"),
             ("Click to upload", f"font-size: 12px; font-weight: 600; color: {TEXT_DARK};"),
-            ("PNG, JPG (max 5MB)", f"font-size: 10px; color: {TEXT_MUTED};"),
+            ("Images up to 25MB (compressed on upload)",
+             f"font-size: 10px; color: {TEXT_MUTED};"),
         ):
             lbl = QLabel(text)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lbl.setStyleSheet(f"{css} {RESET}")
             lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             ul.addWidget(lbl)
+        image_icon = QLabel()
+        set_svg_icon(image_icon, "image", TEXT_MUTED, 22)
+        image_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ul.insertWidget(0, image_icon)
         img_row.addWidget(upload, 1)
 
         self.image_preview = QLabel()
@@ -570,7 +579,8 @@ class ProductDialog(QDialog):
         self.image_preview.setStyleSheet(
             f"background: {GOLD_BG2}; border: 1px solid {BORDER_ALT}; "
             "border-radius: 12px; color: #8B6820; font-size: 30px; font-weight: bold;")
-        remove_btn = QPushButton("×", self.image_preview)
+        remove_btn = QPushButton(self.image_preview)
+        remove_btn.setIcon(svg_icon("x", "#FFFFFF", 13))
         remove_btn.setToolTip("Remove image")
         remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         remove_btn.setFixedSize(22, 22)
@@ -581,6 +591,13 @@ class ProductDialog(QDialog):
         remove_btn.clicked.connect(self._remove_image)
         img_row.addWidget(self.image_preview)
         form.addLayout(img_row)
+
+        self.image_error = QLabel("")
+        self.image_error.setWordWrap(True)
+        self.image_error.setStyleSheet(
+            "color: #B42318; font-size: 11px; padding-left: 2px;")
+        self.image_error.hide()
+        form.addWidget(self.image_error)
 
         # Fields
         self.name_in = self._field("e.g. Argan Oil", self.product.get("name", ""))
@@ -689,13 +706,13 @@ class ProductDialog(QDialog):
         exp = date(picked.year(), picked.month(), picked.day())
         days_left = (exp - date.today()).days
         if days_left < 0:
-            text = "⚠  Already expired"
+            text = "Already expired"
             color = "#A33F35"
         elif days_left == 0:
-            text = "⚠  Expires today"
+            text = "Expires today"
             color = "#A33F35"
         elif days_left <= EXPIRING_WITHIN_DAYS:
-            text = f"⚠  Expiring soon — {days_left} day{'s' if days_left != 1 else ''} left"
+            text = f"Expiring soon — {days_left} day{'s' if days_left != 1 else ''} left"
             color = "#A33F35"
         else:
             text = f"{days_left} days left"
@@ -892,12 +909,18 @@ class ProductDialog(QDialog):
 
         label_col = QVBoxLayout()
         label_col.setSpacing(2)
-        title = QLabel("🚚  Bought this recently?")
+        title = QLabel("Bought this recently?")
         title.setStyleSheet(f"font-size: 12px; font-weight: bold; color: {TEXT_DARK}; {RESET}")
+        title_row = QHBoxLayout()
+        title_icon = QLabel()
+        set_svg_icon(title_icon, "truck", GOLD_HOVER, 16)
+        title_row.addWidget(title_icon)
+        title_row.addWidget(title)
+        title_row.addStretch()
         hint = QLabel("Pick a purchase order item to fill in the details automatically.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"font-size: 11px; color: {TEXT_MUTED}; {RESET}")
-        label_col.addWidget(title)
+        label_col.addLayout(title_row)
         label_col.addWidget(hint)
 
         self.import_picker = PoItemPicker(self.po_items)
@@ -989,20 +1012,30 @@ class ProductDialog(QDialog):
     # Image handling
     # ------------------------------------------------------------------
     def _choose_image(self):
-        import os
-        from PyQt6.QtWidgets import QMessageBox
         path, _ = QFileDialog.getOpenFileName(
-            self, "Choose Product Image", "", "Images (*.png *.jpg *.jpeg)")
+            self, "Choose Product Image", "",
+            "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff)")
         if not path:
             return
-        if os.path.isfile(path) and os.path.getsize(path) > MAX_IMAGE_BYTES:
-            QMessageBox.warning(self, "Image too large", "Please choose an image that is 5MB or smaller.")
+        try:
+            self._image_value = self._image_to_data_url(path)
+        except ValidationError as exc:
+            self.image_error.setText(str(exc))
+            self.image_error.show()
             return
-        self._image_value = self._image_to_data_url(path)
+        except OSError:
+            self.image_error.setText(
+                "The image could not be processed. Please try another image.")
+            self.image_error.show()
+            return
+        self.image_error.clear()
+        self.image_error.hide()
         self._refresh_image_preview()
 
     def _remove_image(self):
         self._image_value = ""
+        self.image_error.clear()
+        self.image_error.hide()
         self._refresh_image_preview()
 
     def _refresh_image_preview(self):
@@ -1025,18 +1058,11 @@ class ProductDialog(QDialog):
         except (ValueError, OSError, IndexError):
             pass
         self.image_preview.setPixmap(QPixmap())
-        self.image_preview.setText((self.name_in.text().strip()[:1] or "🖼").upper())
+        self.image_preview.setText(self.name_in.text().strip()[:1].upper())
 
     @staticmethod
     def _image_to_data_url(path):
-        import mimetypes
-        import os
-        if not path or not os.path.isfile(path):
-            return path or ""
-        mime_type = mimetypes.guess_type(path)[0] or "image/png"
-        with open(path, "rb") as image_file:
-            encoded = base64.b64encode(image_file.read()).decode("ascii")
-        return f"data:{mime_type};base64,{encoded}"
+        return compress_product_image(path)
 
     # ------------------------------------------------------------------
     # Data out

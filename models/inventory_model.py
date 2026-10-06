@@ -145,7 +145,8 @@ class InventoryModel:
         reorder = to_int(reorder if str(reorder).strip() != "" else 10, "Reorder level")
         exp_date = clean_date(exp_date, "Expiration date")
         sku = clean_sku(sku)
-        image_path = clean_text(image_path, "Image path", required=False, max_len=500)
+        image_path = clean_text(
+            image_path, "Image path", required=False, max_len=36_000_000)
         supplier = clean_text(supplier, "Supplier", required=False, max_len=100)
 
         dup = conn.execute(

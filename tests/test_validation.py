@@ -1,5 +1,6 @@
 """Run with:  python -m unittest discover -s tests -v
 Uses a throw-away database built from ae_trends_final.sql; your real data is never touched."""
+import base64
 import os
 import sqlite3
 import sys
@@ -19,6 +20,12 @@ from models.user_model import UserModel
 from utils.errors import friendly_message
 from utils import validators as v
 from utils.validators import ValidationError
+from utils.product_images import (
+    MAX_IMAGE_BYTES,
+    MAX_IMAGE_DIMENSION,
+    compress_product_image,
+)
+from PyQt6.QtGui import QImage
 
 from datetime import date, timedelta
 FUTURE = (date.today() + timedelta(days=10)).isoformat()   # a valid delivery date
@@ -52,6 +59,62 @@ class Base(unittest.TestCase):
     def stock(self, pid):
         with self.db.get_connection() as c:
             return c.execute("SELECT StockQuantity FROM Product WHERE ProductID=?", (pid,)).fetchone()[0]
+
+
+class ProductImageTests(Base):
+    def test_compresses_and_downscales_product_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "large.png")
+            image = QImage(2400, 1200, QImage.Format.Format_RGB32)
+            image.fill(0x804020)
+            self.assertTrue(image.save(path, "PNG"))
+
+            data_url = compress_product_image(path)
+
+        self.assertTrue(data_url.startswith("data:image/jpeg;base64,"))
+        decoded = QImage()
+        self.assertTrue(decoded.loadFromData(
+            base64.b64decode(data_url.split(",", 1)[1])))
+        self.assertEqual(decoded.width(), MAX_IMAGE_DIMENSION)
+        self.assertEqual(decoded.height(), 540)
+
+    def test_rejects_non_image_and_over_limit_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            invalid_path = os.path.join(directory, "not-image.png")
+            with open(invalid_path, "wb") as image_file:
+                image_file.write(b"not an image")
+            with self.assertRaisesRegex(ValidationError, "valid image"):
+                compress_product_image(invalid_path)
+
+            oversized_path = os.path.join(directory, "oversized.png")
+            with open(oversized_path, "wb") as image_file:
+                image_file.truncate(MAX_IMAGE_BYTES + 1)
+            with self.assertRaisesRegex(ValidationError, "under 25MB"):
+                compress_product_image(oversized_path)
+
+    def test_accepts_raw_image_over_5mb_and_under_25mb(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "over-5mb.jpg")
+            image = QImage(1200, 900, QImage.Format.Format_RGB32)
+            image.fill(0x804020)
+            self.assertTrue(image.save(path, "JPEG", 100))
+            with open(path, "ab") as image_file:
+                image_file.truncate(20 * 1024 * 1024)
+
+            compressed = compress_product_image(path)
+
+        self.assertTrue(compressed.startswith("data:image/jpeg;base64,"))
+
+    def test_product_model_accepts_compressed_image_data_url(self):
+        image_data = "data:image/jpeg;base64," + ("a" * 1000)
+        self.inv.add_product(
+            "Image Product", "Beauty", 100, 10, 5, "", image_path=image_data)
+        with self.db.get_connection() as connection:
+            stored = connection.execute(
+                "SELECT ImagePath FROM Product WHERE ProductName=?",
+                ("Image Product",),
+            ).fetchone()["ImagePath"]
+        self.assertEqual(stored, image_data)
 
 
 class ValidatorTests(unittest.TestCase):
@@ -161,11 +224,125 @@ class OrderTests(Base):
         args.update(kw)
         return self.txn.create_order(**args)
 
+    def test_bank_payment_methods_are_saved_and_shown_in_reports(self):
+        pid = self.add(stock=10)
+        methods = ("Maya", "MariBank", "BPI", "GoTyme")
+        codes = [
+            self.order(pid, payment_method=method, reference_number=f"REF-{method}")
+            for method in methods
+        ]
+
+        with self.db.get_connection() as conn:
+            saved_methods = [
+                row["PaymentMethod"] for row in conn.execute(
+                    "SELECT PaymentMethod FROM Payment ORDER BY PaymentID"
+                ).fetchall()
+            ]
+        self.assertEqual(saved_methods, list(methods))
+        self.assertEqual(
+            HistoryModel(self.db).get_filter_options()["payment_methods"],
+            list(v.PAYMENT_METHODS),
+        )
+
+        displayed_orders = {
+            row["order_code"]: row["payment_method"]
+            for row in self.txn.get_all_orders()
+        }
+        for code, method in zip(codes, methods):
+            self.assertEqual(displayed_orders[code], method)
+
+        class Signal:
+            def connect(self, _handler):
+                pass
+
+        class ReportView:
+            filters_changed = Signal()
+            export_requested = Signal()
+            pl_granularity_changed = Signal()
+
+            def display_report(self, data):
+                self.data = data
+
+        class DashboardView:
+            def update_metrics(self, *args, **kwargs):
+                pass
+
+            def __getattr__(self, _name):
+                return lambda *args, **kwargs: None
+
+        report_view = ReportView()
+        controller = ReportController(self.db, report_view, DashboardView())
+        today = date.today().isoformat()
+        controller.load_reports(today, today)
+        report_payments = {row["payment"] for row in report_view.data["transactions"]}
+        self.assertEqual(report_payments, set(methods))
+
+    def test_payment_method_migration_preserves_records_and_allows_banks(self):
+        pid = self.add(stock=4)
+        original_code = self.order(pid)
+
+        with self.db.get_connection() as conn:
+            conn.execute("ALTER TABLE Payment RENAME TO Payment_previous")
+            conn.execute("""
+                CREATE TABLE Payment (
+                    PaymentID       INTEGER PRIMARY KEY AUTOINCREMENT,
+                    OrderID         INTEGER NOT NULL UNIQUE,
+                    PaymentMethod   TEXT CHECK (PaymentMethod IN ('Cash','GCash','Online Banking')),
+                    AmountPaid      REAL NOT NULL DEFAULT 0 CHECK (AmountPaid >= 0),
+                    PaymentDate     TEXT DEFAULT (datetime('now','localtime')),
+                    PaymentStatus   TEXT NOT NULL DEFAULT 'Unpaid'
+                                    CHECK (PaymentStatus IN ('Unpaid','Paid','Refunded')),
+                    ReferenceNumber TEXT,
+                    ReceiptImageURL TEXT,
+                    FOREIGN KEY (OrderID) REFERENCES Orders(OrderID) ON DELETE CASCADE
+                )
+            """)
+            conn.execute("""
+                INSERT INTO Payment
+                SELECT PaymentID, OrderID, PaymentMethod, AmountPaid, PaymentDate,
+                       PaymentStatus, ReferenceNumber, ReceiptImageURL
+                FROM Payment_previous
+            """)
+            conn.execute("DROP TABLE Payment_previous")
+
+        self.db.init_db()
+        new_code = self.order(pid, payment_method="GoTyme", reference_number="GT-123")
+
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                "SELECT OrderID, PaymentMethod FROM Payment ORDER BY PaymentID"
+            ).fetchall()
+            self.assertEqual([row["PaymentMethod"] for row in rows], ["Cash", "GoTyme"])
+            self.assertEqual(
+                conn.execute("PRAGMA foreign_key_check").fetchall(), [])
+            self.assertEqual(original_code, f"ORD-{rows[0]['OrderID']:04d}")
+            self.assertEqual(new_code, f"ORD-{rows[1]['OrderID']:04d}")
+
     def test_good_order_deducts_stock(self):
         pid = self.add()
         code = self.order(pid)
         self.assertTrue(code.startswith("ORD-"))
         self.assertEqual(self.stock(pid), 8)
+
+    def test_initial_status_depends_on_platform(self):
+        pid = self.add()
+        walkin_code = self.order(pid)
+        online_code = self.order(
+            pid, customer_name="Online Customer", customer_phone="09171234567",
+            address="Davao", order_type="Shopee")
+
+        with self.db.get_connection() as conn:
+            walkin_id = int(walkin_code.split("-")[1])
+            online_id = int(online_code.split("-")[1])
+            walkin_status = conn.execute(
+                "SELECT OrderStatus FROM Orders WHERE OrderID = ?", (walkin_id,)
+            ).fetchone()["OrderStatus"]
+            online_status = conn.execute(
+                "SELECT OrderStatus FROM Orders WHERE OrderID = ?", (online_id,)
+            ).fetchone()["OrderStatus"]
+
+        self.assertEqual(walkin_status, "Paid")
+        self.assertEqual(online_status, "Pending")
 
     def test_bad_orders_change_nothing(self):
         pid = self.add(stock=3)
@@ -189,6 +366,15 @@ class OrderTests(Base):
         self.assertEqual(self.stock(pid), 3)
         with self.db.get_connection() as c:
             self.assertEqual(c.execute("SELECT COUNT(*) FROM Orders").fetchone()[0], 0)
+
+    def test_contact_number_must_be_exactly_11_digits(self):
+        pid = self.add()
+        for phone in ("1234567890", "123456789012", "0917-1234567", "12345abc6789"):
+            with self.assertRaisesRegex(
+                    ValidationError, "Contact Number must be exactly 11 digits"):
+                self.order(pid, customer_phone=phone)
+
+        self.order(pid, customer_phone="09171234567")
 
     def test_status_flow_and_stock_restore(self):
         pid = self.add()
@@ -329,9 +515,14 @@ class POTests(Base):
         self.po.add_supplier("Acme", "Davao", "09171234567")
         with self.assertRaises(ValidationError):
             self.po.add_supplier("", "x", "")
-        with self.assertRaises(ValidationError):
-            self.po.add_supplier("Zed", "x", "abc")
-        sid = self.po.add_supplier("Beta")
+        for contact in ("", "1234567890", "123456789012", "0917 1234567", "12345abc6789"):
+            with self.assertRaisesRegex(
+                    ValidationError, "Contact Number must be exactly 11 digits"):
+                self.po.add_supplier("Zed", "x", contact)
+        sid = self.po.add_supplier("Beta", contact="09171234567")
+        with self.assertRaisesRegex(
+                ValidationError, "Contact Number must be exactly 11 digits"):
+            self.po.update_supplier(sid, "Beta", "", "1234567890")
         with self.assertRaises(ValidationError):
             self.po.update_supplier(sid, "acme", "", "")                     # name clash
         with self.assertRaises(ValidationError):

@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import traceback
 from logging.handlers import RotatingFileHandler
+from utils.paths import app_data_dir
 
 from utils.validators import ValidationError
 
@@ -19,6 +20,8 @@ class AppError(Exception):
 
 
 def setup_logging():
+    global LOG_DIR
+    LOG_DIR = os.path.join(app_data_dir(), "logs")
     os.makedirs(LOG_DIR, exist_ok=True)
     handler = RotatingFileHandler(os.path.join(LOG_DIR, "ae_trends.log"),
                                   maxBytes=1_000_000, backupCount=3, encoding="utf-8")

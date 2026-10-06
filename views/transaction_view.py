@@ -19,11 +19,13 @@ import re
 from PyQt6.QtCore import QDateTime, QPointF, QRectF, QRegularExpression, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QColor, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
                          QPixmap, QPolygonF, QRegularExpressionValidator, QShortcut)
-from PyQt6.QtWidgets import (QButtonGroup, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-                             QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
+from PyQt6.QtWidgets import (QButtonGroup, QDialog, QFileDialog, QFrame, QGridLayout,
+                             QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
                              QVBoxLayout, QWidget)
 
 from views.styled_dropdown import StyledComboBox
+from views.ui_icons import svg_icon
+from utils.validators import ONLINE_BANKS
 
 # --------------------------------------------------------------------------- #
 # Theme (same gold / cream palette as the rest of the app)
@@ -91,11 +93,8 @@ def format_money(value):
 
 
 def clean_phone(text):
-    """Keep digits and a single leading '+', so '0917-123 4567' still validates."""
-    text = re.sub(r"[^\d+]", "", text or "")
-    if "+" in text:
-        text = ("+" if text.startswith("+") else "") + text.replace("+", "")
-    return text[:16]
+    """Keep only ASCII digits in the checkout contact field."""
+    return re.sub(r"[^0-9]", "", text or "")
 
 
 def as_int(value, default=0):
@@ -906,7 +905,8 @@ class TransactionView(QWidget):
         self.catalog_count = label("0 products", 11, 500, MUTED)
         head.addWidget(self.catalog_count)
         head.addStretch()
-        self.refresh_catalog_btn = QPushButton("↻  Refresh")
+        self.refresh_catalog_btn = QPushButton("Refresh")
+        self.refresh_catalog_btn.setIcon(svg_icon("refresh", SOFT_TEXT, 15))
         self.refresh_catalog_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_catalog_btn.setFixedHeight(30)
         self.refresh_catalog_btn.setStyleSheet(f"""
@@ -1113,32 +1113,57 @@ class TransactionView(QWidget):
 
         # payment
         body_lay.addWidget(label("Payment Method", 14, 800, INK))
-        pay_row = QHBoxLayout()
-        pay_row.setSpacing(8)
+        payment_options = QHBoxLayout()
+        payment_options.setSpacing(6)
+        self._pay_group = QButtonGroup(self)
+        self._pay_group.setExclusive(True)
         self.pay_cash = QPushButton("Cash")
         self.pay_gcash = QPushButton("GCash")
         self.pay_bank = QPushButton("Online Banking")
-        self.pay_cash.setIcon(make_state_icon("cash", SOFT_TEXT, GOLD_DARK, 18))
-        self.pay_gcash.setIcon(make_state_icon("wallet", SOFT_TEXT, GOLD_DARK, 18))
-        self.pay_bank.setIcon(make_state_icon("card", SOFT_TEXT, GOLD_DARK, 18))
-        pay_style = f"""
-            QPushButton {{ background: {FIELD_BG}; color: {SOFT_TEXT}; border: 1px solid {FIELD_LINE};
-                          border-radius: 10px; padding: 0 6px; font-size: 12px; font-weight: 600; }}
-            QPushButton:hover:!checked {{ border-color: {GOLD}; }}
-            QPushButton:checked {{ background: {GOLD_SOFT}; color: {GOLD_DARK}; border: 1.5px solid {GOLD_LINE}; font-weight: 700; }}
+        payment_style = f"""
+            QPushButton {{
+                background: #F3F1EC; color: {INK}; border: 1px solid {FIELD_LINE};
+                border-radius: 7px; padding: 8px 10px;
+                font-size: 12px; font-weight: 600;
+            }}
+            QPushButton:hover:!checked {{
+                background: #ECE7DB; border-color: {GOLD};
+            }}
+            QPushButton:checked {{
+                background: {GOLD}; color: white; border: 1px solid {GOLD};
+                font-weight: 700;
+            }}
+            QPushButton:checked:hover {{
+                background: {GOLD_HOVER}; border-color: {GOLD_HOVER};
+            }}
+            QPushButton:pressed {{
+                background: {GOLD_PRESSED};
+            }}
         """
-        self._pay_group = QButtonGroup(self)
-        self._pay_group.setExclusive(True)
-        for btn in (self.pay_cash, self.pay_gcash, self.pay_bank):
-            btn.setCheckable(True)
-            btn.setIconSize(QSize(18, 18))
-            btn.setFixedHeight(44)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(pay_style)
-            self._pay_group.addButton(btn)
-            pay_row.addWidget(btn, 1)
+        for button in (self.pay_cash, self.pay_gcash, self.pay_bank):
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFixedHeight(40)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.setStyleSheet(payment_style)
+            self._pay_group.addButton(button)
+            payment_options.addWidget(button, 1)
         self.pay_cash.setChecked(True)
-        body_lay.addLayout(pay_row)
+        body_lay.addLayout(payment_options)
+
+        self.bank_selection = QWidget()
+        bank_lay = QVBoxLayout(self.bank_selection)
+        bank_lay.setContentsMargins(0, 0, 0, 0)
+        bank_lay.setSpacing(5)
+        bank_lay.addWidget(label("Bank", 11, 600, MUTED))
+        self.bank_combo = StyledComboBox()
+        self.bank_combo.addItem("Select a bank", "")
+        for bank in ONLINE_BANKS:
+            self.bank_combo.addItem(bank, bank)
+        self.bank_combo.setFixedHeight(40)
+        bank_lay.addWidget(self.bank_combo)
+        self.bank_selection.setVisible(False)
+        body_lay.addWidget(self.bank_selection)
 
         # cash: amount paid
         self.cash_box = QWidget()
@@ -1156,13 +1181,13 @@ class TransactionView(QWidget):
         cash_lay.addWidget(self.amount_paid_input)
         body_lay.addWidget(self.cash_box)
 
-        # GCash / bank: reference + receipt
+        # Non-cash payments: reference + receipt
         self.epay_box = QWidget()
         epay_lay = QVBoxLayout(self.epay_box)
         epay_lay.setContentsMargins(0, 0, 0, 0)
         epay_lay.setSpacing(5)
-        # NEW RULE: for GCash / Online Banking, at least ONE of the reference
-        # number or the receipt image is required (checked in
+        # At least ONE of the reference number or receipt image is required for
+        # non-cash payments (checked in
         # TransactionController.handle_confirm_transaction).
         self.epay_hint = label("Provide at least one: the reference number or a receipt image.",
                                11, 500, WARN)
@@ -1259,9 +1284,10 @@ class TransactionView(QWidget):
         self.amount_paid_input.textChanged.connect(lambda _t: self._on_field_edited(self.amount_paid_input))
         self.amount_paid_input.textChanged.connect(lambda _t: self._update_change())
         self.amount_paid_input.editingFinished.connect(self._format_amount_field)
-        self.pay_cash.toggled.connect(lambda _c: self._update_payment_ui())
-        self.pay_gcash.toggled.connect(lambda _c: self._update_payment_ui())
-        self.pay_bank.toggled.connect(lambda _c: self._update_payment_ui())
+        for button in (self.pay_cash, self.pay_gcash, self.pay_bank):
+            button.toggled.connect(lambda _checked: self._update_payment_ui())
+        self.bank_combo.currentIndexChanged.connect(
+            lambda _index: self._update_payment_ui())
         self.receipt_box.file_chosen.connect(self._on_receipt_chosen)
         self.receipt_box.cleared.connect(self._on_receipt_cleared)
 
@@ -1393,8 +1419,15 @@ class TransactionView(QWidget):
         self.phone_input.setText(state["phone"])
         self.address_input.setText(state["address"])
         self.platform_combo.setCurrentIndex(state["platform_index"])
-        {"Cash": self.pay_cash, "GCash": self.pay_gcash,
-         "Online Banking": self.pay_bank}.get(state["payment"], self.pay_cash).setChecked(True)
+        payment = state["payment"]
+        if payment == "Cash":
+            self.pay_cash.setChecked(True)
+        elif payment == "GCash":
+            self.pay_gcash.setChecked(True)
+        else:
+            self.pay_bank.setChecked(True)
+            bank_index = self.bank_combo.findData(payment)
+            self.bank_combo.setCurrentIndex(max(0, bank_index))
         self.amount_paid_input.setText(state["amount_paid"])
         self.reference_input.setText(state["reference"])
         self._receipt_path = state["receipt"]
@@ -1435,14 +1468,16 @@ class TransactionView(QWidget):
             return "Cash"
         if self.pay_gcash.isChecked():
             return "GCash"
-        return "Online Banking"
+        return self.bank_combo.currentData() or ""
 
     def _update_payment_ui(self):
         cash = self.pay_cash.isChecked()
-        online = self._active_transaction_mode == "online"
+        online_banking = self.pay_bank.isChecked()
         self.cash_box.setVisible(cash)
         self.epay_box.setVisible(not cash)
         self.change_row.setVisible(cash)
+        self.bank_selection.setVisible(online_banking)
+        self.bank_combo.setEnabled(online_banking)
         # OLD (reference required only for online orders, optional for walk-in):
         # self.reference_label.setText("Reference Number" + (" <span style='color:#C94C4C;'>*</span>" if online else
         #                              "  <span style='color:#A39B90; font-weight:500;'>(Optional)</span>"))
@@ -1475,7 +1510,7 @@ class TransactionView(QWidget):
             self.change_value.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {DANGER};")
 
     def get_payment_details(self):
-        if self.pay_cash.isChecked():
+        if self.get_selected_payment() == "Cash":
             paid = parse_money(self.amount_paid_input.text())
             return {"method": "Cash", "amount_paid": paid if paid is not None else 0.0,
                     "reference_number": "", "receipt_image": ""}
@@ -1487,6 +1522,8 @@ class TransactionView(QWidget):
         cleaned = clean_phone(text)
         if cleaned != text:
             self.phone_input.setText(cleaned)
+        if len(cleaned) > 11:
+            self.show_form_error("Contact Number must be exactly 11 digits.")
 
     def _on_receipt_chosen(self, path):
         extension = os.path.splitext(path)[1].lower()
@@ -1884,12 +1921,6 @@ class TransactionView(QWidget):
 
         actions = QHBoxLayout()
         actions.setSpacing(10)
-        print_btn = QPushButton("Print Thermal Receipt")
-        print_btn.setFixedHeight(40)
-        print_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        print_btn.setStyleSheet(f"QPushButton {{ background: #F6EEDC; color: #6D5A27; border: 1px solid {FIELD_LINE}; "
-                                f"border-radius: 10px; padding: 0 12px; font-weight: 700; }}"
-                                f"QPushButton:hover {{ background: #EADCB9; }}")
         new_sale_btn = QPushButton("Start New Sale")
         new_sale_btn.setFixedHeight(40)
         new_sale_btn.setDefault(True)
@@ -1897,16 +1928,12 @@ class TransactionView(QWidget):
         new_sale_btn.setStyleSheet(f"QPushButton {{ background: {GOLD}; color: white; border: none; "
                                    f"border-radius: 10px; padding: 0 12px; font-weight: 700; }}"
                                    f"QPushButton:hover {{ background: {GOLD_HOVER}; }}")
-        print_btn.clicked.connect(lambda: self._print_thermal_receipt(dialog, order_code))
         new_sale_btn.clicked.connect(dialog.accept)
-        actions.addWidget(print_btn)
+        actions.addStretch()
         actions.addWidget(new_sale_btn)
+        actions.addStretch()
         layout.addLayout(actions)
         dialog.exec()
-
-    @staticmethod
-    def _print_thermal_receipt(parent, order_code):
-        QMessageBox.information(parent, "Receipt", f"Thermal receipt prepared for {order_code}.")
 
     def clear_form(self):
         self._mode_forms[self._active_transaction_mode] = self._empty_form_state()

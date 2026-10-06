@@ -66,7 +66,7 @@ class ReportController:
             clean_date_range(from_date, to_date)
         except ValidationError as exc:
             QMessageBox.warning(self.report_view, "Check the Dates", str(exc))
-            return
+            return False
 
         with self.db.get_connection() as conn:
             order_rows = conn.execute(
@@ -383,6 +383,7 @@ class ReportController:
             [{"name": tp["name"], "qty": tp["qty"], "revenue": tp["revenue"]} for tp in top_products[:5]]
         )
         self.dashboard_view.update_alerts(low_stock_items)
+        return True
 
     # ------------------------------------------------------------------ #
     # PROFIT & LOSS: Daily / Weekly / Monthly bucketing
@@ -563,7 +564,12 @@ class ReportController:
         to_date = today.toString("yyyy-MM-dd")
         self.report_view.from_date.setDate(start)
         self.report_view.to_date.setDate(today)
-        self.load_reports(from_date, to_date)
+        return self.load_reports(from_date, to_date)
+
+    def refresh_dashboard(self):
+        preset = self.dashboard_view.date_range.currentText()
+        success = self.load_dashboard_range(preset)
+        self.dashboard_view.finish_refresh(success is True)
 
     # ------------------------------------------------------------------ #
     # EXPORT

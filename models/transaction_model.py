@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import sqlite3
 import uuid
@@ -6,7 +7,7 @@ from datetime import datetime
 
 from utils.validators import (ValidationError, PAYMENT_METHODS, check_choice,
                               check_order_transition, clean_name, clean_order_code,
-                              clean_phone, clean_text, to_float, to_int)
+                              clean_text, to_float, to_int)
 
 def order_code(order_id):
     return f"ORD-{order_id:04d}"
@@ -259,7 +260,10 @@ class TransactionModel:
                       total, payment_method, cart_items, amount_paid=None,
                       reference_number="", receipt_image=""):
         customer_name = clean_name(customer_name, "Customer name", required=False)
-        customer_phone = clean_phone(customer_phone, "Contact number")
+        customer_phone = clean_text(customer_phone, "Contact Number",
+                                    required=False, max_len=20)
+        if customer_phone and not re.fullmatch(r"[0-9]{11}", customer_phone):
+            raise ValidationError("Contact Number must be exactly 11 digits.")
         address = clean_text(address, "Delivery address", required=False, max_len=255)
         order_type = clean_text(order_type, "Platform", max_len=50)
         payment_method = check_choice(payment_method, "Payment method", PAYMENT_METHODS)
@@ -289,8 +293,8 @@ class TransactionModel:
                                                         customer_phone, address)
             platform_id = self._platform_id_for(conn, order_type)
 
-            # Flow enforcement: Send all new transactions to Order Status first
-            initial_status = "Pending"
+            # Walk-in sales are paid at checkout; online orders await fulfillment.
+            initial_status = "Paid" if order_type == "Walk-in" else "Pending"
 
             order_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cur = conn.execute(

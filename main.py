@@ -11,6 +11,7 @@ from views.responsive import apply_ui_scale
 from views.message_box import install as install_modern_message_boxes
 from PyQt6.QtWidgets import QMessageBox
 from utils.errors import AppError, setup_logging, install_excepthook, log, friendly_message
+from utils.paths import app_data_dir, resource_path
 
 def apply_light_palette(app):
     """Forces the app's light colour scheme everywhere.
@@ -66,8 +67,9 @@ def main():
     install_modern_message_boxes()   # every QMessageBox.* call gets the modern card look
     
     # --- SET GLOBAL WINDOW ICON ---
-    if os.path.exists("ae-logo.jpg"):
-        app.setWindowIcon(QIcon("ae-logo.jpg"))
+    logo_path = resource_path("ae-logo.jpg")
+    if os.path.exists(logo_path):
+        app.setWindowIcon(QIcon(logo_path))
     else:
         log.warning("ae-logo.jpg not found; using default icon")
     
@@ -146,7 +148,8 @@ def main():
     """)
 
     # Initialize SQLite database with tables and sample data
-    db = DatabaseManager("ae_trends.db")
+    db_path = os.path.join(app_data_dir(), "ae_trends.db")
+    db = DatabaseManager(db_path, schema_path=resource_path("ae_trends_final.sql"))
     try:
         db.init_db()
     except Exception as exc:  # noqa: BLE001 - startup must explain, not crash

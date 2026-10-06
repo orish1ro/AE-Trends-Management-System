@@ -20,7 +20,9 @@ SKU_RE = re.compile(r"^[A-Za-z0-9._\-/ ]{1,40}$")
 ORDER_STATUSES = ("Pending", "Paid", "Prepared", "Shipped",
                   "Completed", "Refunded", "Cancelled")
 PO_STATUSES = ("Pending", "Received", "Cancelled")
-PAYMENT_METHODS = ("Cash", "GCash", "Online Banking")
+PAYMENT_METHODS = ("Cash", "GCash", "Maya", "MariBank", "BPI", "GoTyme",
+                   "Online Banking")
+ONLINE_BANKS = ("MariBank", "BPI", "GoTyme")
 ROLES = ("Owner", "Cashier", "Inventory Staff")
 
 # Allowed order-status moves. Anything not listed is rejected.

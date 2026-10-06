@@ -116,6 +116,7 @@ class AuthController:
             on_po_saved=self._handle_po_saved, inv_model=inv_model)
         self.rep_ctrl = ReportController(self.db, self.main_window.reports_view, self.main_window.dashboard_view)
         self.main_window.dashboard_view.date_range_changed.connect(self.rep_ctrl.load_dashboard_range)
+        self.main_window.dashboard_view.refresh_requested.connect(self.rep_ctrl.refresh_dashboard)
 
         # Whenever inventory is written to (product added/edited), keep the
         # Purchase Order product dropdown in sync as well, on top of the

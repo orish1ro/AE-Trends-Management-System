@@ -98,7 +98,8 @@ CREATE TABLE IF NOT EXISTS OrderDetails (
 CREATE TABLE IF NOT EXISTS Payment (
     PaymentID       INTEGER PRIMARY KEY AUTOINCREMENT,
     OrderID         INTEGER NOT NULL UNIQUE,
-    PaymentMethod   TEXT CHECK (PaymentMethod IN ('Cash','GCash','Online Banking')),
+    PaymentMethod   TEXT CHECK (PaymentMethod IN
+                    ('Cash','GCash','Maya','MariBank','BPI','GoTyme','Online Banking')),
     AmountPaid      REAL NOT NULL DEFAULT 0 CHECK (AmountPaid >= 0),
     PaymentDate     TEXT DEFAULT (datetime('now','localtime')),
     PaymentStatus   TEXT NOT NULL DEFAULT 'Unpaid'

@@ -1,9 +1,10 @@
 """MODEL: reads/writes PurchaseOrder and PurchaseOrderDetails."""
+import re
 import sqlite3
 from datetime import datetime
 
 from utils.validators import (ValidationError, clean_date, clean_name, clean_order_code,
-                              clean_phone, clean_text, to_float, to_int)
+                              clean_text, to_float, to_int)
 
 
 def po_number(po_id):
@@ -180,9 +181,12 @@ class POModel:
         ]
 
     def _clean_supplier(self, name, location, contact):
+        contact = "" if contact is None else str(contact)
+        if not re.fullmatch(r"[0-9]{11}", contact):
+            raise ValidationError("Contact Number must be exactly 11 digits.")
         return (clean_name(name, "Supplier name"),
                 clean_text(location, "Location", required=False, max_len=150),
-                clean_phone(contact, "Contact number"))
+                contact)
 
     def add_supplier(self, name, location="", contact=""):
         """Creates a new supplier. If a supplier with this name (any letter

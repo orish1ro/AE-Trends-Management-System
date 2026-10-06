@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QRegularExpression, QDate
 from PyQt6.QtGui import QRegularExpressionValidator
+from views.ui_icons import set_svg_icon, svg_icon
 from datetime import datetime
 from views.styled_dropdown import StyledComboBox
 from views.transaction_history_view import ArrowDateEdit, FILTER_CONTROL_STYLE
@@ -266,7 +267,8 @@ class PurchaseOrdersView(QWidget):
         self.date_range_filter.addItems(["Date Range", "All Time"])
         self.date_range_filter.setMinimumWidth(150)
 
-        self.new_po_btn = QPushButton("＋  New Purchase Order")
+        self.new_po_btn = QPushButton("New Purchase Order")
+        self.new_po_btn.setIcon(svg_icon("plus", "#FFFFFF", 17))
         self.new_po_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.new_po_btn.setStyleSheet(GOLD_FILLED_BTN_STYLE)
         self.new_po_btn.clicked.connect(self._open_new_po_panel)
@@ -404,7 +406,8 @@ class PurchaseOrdersView(QWidget):
         outer.setSpacing(12)
 
         header_row = QHBoxLayout()
-        icon = QLabel("👤")
+        icon = QLabel()
+        set_svg_icon(icon, "user", GOLD, 18)
         icon.setFixedSize(34, 34)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setStyleSheet(f"background: {GOLD_BG2}; border-radius: 17px; font-size: 14px;")
@@ -418,7 +421,8 @@ class PurchaseOrdersView(QWidget):
         header_text.addWidget(h_title)
         header_text.addWidget(h_sub)
 
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton()
+        close_btn.setIcon(svg_icon("x", TEXT_MUTED, 14))
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 13px; {RESET}")
         close_btn.clicked.connect(self._cancel_add_supplier)
@@ -443,7 +447,9 @@ class PurchaseOrdersView(QWidget):
         self.sup_contact_input.setStyleSheet(FIELD_STYLE)
 
         self.sup_phone_input = QLineEdit()
-        self.sup_phone_input.setPlaceholderText("e.g. 0917 123 4567")
+        self.sup_phone_input.setPlaceholderText("e.g. 09171234567")
+        self.sup_phone_input.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"[0-9]*"), self))
         self.sup_phone_input.setStyleSheet(FIELD_STYLE)
 
         self.sup_email_input = QLineEdit()
@@ -457,6 +463,9 @@ class PurchaseOrdersView(QWidget):
         grid.addLayout(labeled_field("Supplier Name", self.sup_name_input, required=True), 0, 0)
         grid.addLayout(labeled_field("Contact Person", self.sup_contact_input), 0, 1)
         grid.addLayout(labeled_field("Phone Number", self.sup_phone_input), 1, 0)
+        self.sup_phone_error = QLabel("Invalid contact number. Maximum 11 digits allowed.")
+        self.sup_phone_error.setStyleSheet("font-size: 11px; color: #C94C4C; background: transparent;")
+        grid.addWidget(self.sup_phone_error, 2, 0)
         grid.addLayout(labeled_field("Email (Optional)", self.sup_email_input), 1, 1)
         outer.addLayout(grid)
         outer.addLayout(labeled_field("Address (Optional)", self.sup_address_input))
@@ -469,9 +478,11 @@ class PurchaseOrdersView(QWidget):
         cancel_btn.clicked.connect(self._cancel_add_supplier)
 
         save_sup_btn = QPushButton("Save Supplier")
+        self.save_sup_btn = save_sup_btn
         save_sup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         save_sup_btn.setStyleSheet(GOLD_FILLED_BTN_STYLE)
         save_sup_btn.clicked.connect(self._save_new_supplier)
+        self.sup_phone_input.textChanged.connect(self._update_quick_supplier_phone_validation)
 
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(save_sup_btn)
@@ -479,7 +490,16 @@ class PurchaseOrdersView(QWidget):
 
         self.add_supplier_card = card
         card.setVisible(False)
+        self._update_quick_supplier_phone_validation(self.sup_phone_input.text())
         return card
+
+    def _update_quick_supplier_phone_validation(self, text):
+        valid = len(text) == 11 and text.isascii() and text.isdigit()
+        over_limit = len(text) > 11
+        self.sup_phone_input.setStyleSheet(
+            FIELD_STYLE.replace(FIELD_BORDER, "#C94C4C") if over_limit else FIELD_STYLE)
+        self.sup_phone_error.setVisible(over_limit)
+        self.save_sup_btn.setEnabled(valid)
 
     # ------------------------------------------------------------------
     # Right column: the "New Purchase Order" side panel
@@ -502,7 +522,8 @@ class PurchaseOrdersView(QWidget):
 
         # -- Header -----------------------------------------------------
         header_row = QHBoxLayout()
-        icon = QLabel("🚚")
+        icon = QLabel()
+        set_svg_icon(icon, "truck", GOLD, 20)
         icon.setFixedSize(38, 38)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setStyleSheet(f"background: {GOLD_BG2}; border-radius: 19px; font-size: 16px;")
@@ -517,7 +538,8 @@ class PurchaseOrdersView(QWidget):
         header_text.addWidget(h_title)
         header_text.addWidget(h_sub)
 
-        close_btn = QPushButton("✕")
+        close_btn = QPushButton()
+        close_btn.setIcon(svg_icon("x", TEXT_MUTED, 14))
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 15px; {RESET}")
         close_btn.clicked.connect(lambda: self._set_side_panel_open(False))
@@ -535,7 +557,8 @@ class PurchaseOrdersView(QWidget):
         self.supplier_combo = SupplierComboBox()
         self.supplier_combo.addItem("Select Supplier")
 
-        add_sup_btn = QPushButton("＋ Add Supplier")
+        add_sup_btn = QPushButton("Add Supplier")
+        add_sup_btn.setIcon(svg_icon("plus", GOLD, 16))
         add_sup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_sup_btn.setStyleSheet(GOLD_OUTLINE_BTN_STYLE)
         add_sup_btn.clicked.connect(lambda: self.add_supplier_card.setVisible(True))
@@ -562,7 +585,8 @@ class PurchaseOrdersView(QWidget):
         self.items_count_lbl.setStyleSheet(
             f"font-size: 13px; font-weight: bold; color: {TEXT_DARK}; {RESET}"
         )
-        add_products_btn = QPushButton("＋ Add Products")
+        add_products_btn = QPushButton("Add Products")
+        add_products_btn.setIcon(svg_icon("plus", GOLD, 16))
         add_products_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_products_btn.setStyleSheet(GOLD_FILLED_BTN_STYLE)
         add_products_btn.clicked.connect(self.add_item_row)
@@ -723,7 +747,8 @@ class PurchaseOrdersView(QWidget):
         box.setContentsMargins(10, 26, 10, 26)
         box.setSpacing(6)
 
-        icon = QLabel("📦")
+        icon = QLabel()
+        set_svg_icon(icon, "package", GOLD, 24)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon.setStyleSheet("font-size: 26px; background: transparent; border: none;")
 
@@ -876,7 +901,8 @@ class PurchaseOrdersView(QWidget):
             f"font-size: 12px; font-weight: bold; color: {TEXT_DARK2}; {RESET}"
         )
 
-        del_btn = QPushButton("🗑")
+        del_btn = QPushButton()
+        del_btn.setIcon(svg_icon("trash", "#B04A4A", 15))
         del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         del_btn.setFixedSize(ITEM_COL_DEL_W, 26)
         del_btn.setStyleSheet(
@@ -967,6 +993,11 @@ class PurchaseOrdersView(QWidget):
 
         location = self.sup_address_input.text().strip()
         contact = self.sup_phone_input.text().strip()
+        if not self.sup_phone_input.hasAcceptableInput() or len(contact) != 11:
+            QMessageBox.warning(
+                self, "Validation Error",
+                "Contact Number must be exactly 11 digits.")
+            return
 
         # Persist to the database via the controller. set_supplier_list()
         # (called back by the controller once it's saved) is what actually

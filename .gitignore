@@ -7,3 +7,5 @@ venv/
 .env
 ae_trends.db
 logs/
+/build/
+/dist/

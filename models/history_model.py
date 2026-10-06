@@ -8,7 +8,7 @@ Nothing here writes to the database - this module only reads.
 """
 import os
 from datetime import datetime
-from utils.validators import ValidationError, clean_date_range
+from utils.validators import PAYMENT_METHODS, ValidationError, clean_date_range
 
 
 def order_code(order_id):
@@ -72,7 +72,7 @@ class HistoryModel:
         # removed from New Transaction. Listing them directly here keeps the
         # two screens showing the exact same set of platforms, always.
         platforms = ["Walk-in", "Shopee", "TikTok Shop", "Lazada", "Facebook Live"]
-        payment_methods = ["Cash", "GCash", "Online Banking"]
+        payment_methods = list(PAYMENT_METHODS)
         order_statuses = ["Completed", "Refunded", "Cancelled"]
         po_statuses = ["Pending", "Received", "Cancelled"]
 

@@ -5,8 +5,10 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QWidget, QMessageBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QRegularExpression
+from PyQt6.QtGui import QRegularExpressionValidator
 from views.responsive import clamp_dialog_min
+from views.ui_icons import svg_icon
 
 RESET = "background: transparent; border: none;"
 GOLD = "#C09E3B"
@@ -85,7 +87,9 @@ class SupplierFormDialog(QDialog):
         self.location_input.setStyleSheet(FIELD_STYLE)
 
         self.contact_input = QLineEdit()
-        self.contact_input.setPlaceholderText("e.g. 0917 123 4567")
+        self.contact_input.setPlaceholderText("e.g. 09171234567")
+        self.contact_input.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"[0-9]*"), self))
         self.contact_input.setStyleSheet(FIELD_STYLE)
 
         if supplier:
@@ -96,6 +100,9 @@ class SupplierFormDialog(QDialog):
         layout.addLayout(_field("Supplier Name *", self.name_input))
         layout.addLayout(_field("Location", self.location_input))
         layout.addLayout(_field("Contact Number", self.contact_input))
+        self.contact_error = QLabel("Invalid contact number. Maximum 11 digits allowed.")
+        self.contact_error.setStyleSheet("font-size: 11px; color: #C94C4C; background: transparent;")
+        layout.addWidget(self.contact_error)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -108,14 +115,31 @@ class SupplierFormDialog(QDialog):
         save_btn.setStyleSheet(GOLD_FILLED_BTN_STYLE)
         save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         save_btn.clicked.connect(self._on_save)
+        self.save_btn = save_btn
 
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
 
+        self.contact_input.textChanged.connect(self._update_contact_validation)
+        self._update_contact_validation(self.contact_input.text())
+
+    def _update_contact_validation(self, text):
+        valid = len(text) == 11 and text.isascii() and text.isdigit()
+        over_limit = len(text) > 11
+        self.contact_input.setStyleSheet(
+            FIELD_STYLE.replace(FIELD_BORDER, "#C94C4C") if over_limit else FIELD_STYLE)
+        self.contact_error.setVisible(over_limit)
+        self.save_btn.setEnabled(valid)
+
     def _on_save(self):
         if not self.name_input.text().strip():
             QMessageBox.warning(self, "Validation Error", "Please enter a supplier name.")
+            return
+        if not self.contact_input.hasAcceptableInput() or len(self.contact_input.text()) != 11:
+            QMessageBox.warning(
+                self, "Validation Error",
+                "Contact Number must be exactly 11 digits.")
             return
         self.accept()
 
@@ -152,7 +176,8 @@ class SupplierManagerDialog(QDialog):
         header_row.addWidget(title)
         header_row.addStretch()
 
-        add_btn = QPushButton("＋ Add Supplier")
+        add_btn = QPushButton("Add Supplier")
+        add_btn.setIcon(svg_icon("plus", "#FFFFFF", 16))
         add_btn.setStyleSheet(GOLD_FILLED_BTN_STYLE)
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.clicked.connect(self._add_supplier)

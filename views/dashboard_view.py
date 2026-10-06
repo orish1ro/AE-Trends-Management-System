@@ -5,12 +5,13 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QLineEdit,
     QAbstractItemView, QSizePolicy, QScrollArea
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QDate
+from PyQt6.QtCore import Qt, pyqtSignal, QDate, QTimer
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush, QPainterPath
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtCore import QByteArray
 from views.styled_dropdown import StyledComboBox
 from views.transaction_history_view import status_badge, STATUS_COLORS
+from views.ui_icons import svg_icon
 
 LABEL_RESET = "background: transparent; border: none;"
 
@@ -553,6 +554,7 @@ class DashboardView(QWidget):
     date_range_changed = pyqtSignal(str)
     receive_stock_requested = pyqtSignal()
     export_report_requested = pyqtSignal()
+    refresh_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -618,16 +620,24 @@ class DashboardView(QWidget):
 
         actions = QHBoxLayout()
         actions.setSpacing(10)
+        self.refresh_btn = _ghost_button("Refresh")
+        self.refresh_btn.setIcon(svg_icon("refresh", INK, 18))
         self.export_btn = _ghost_button("Export Report")
+        self.export_btn.setIcon(svg_icon("download", INK, 18))
         self.receive_stock_btn = _ghost_button("Receive Stock")
-        self.new_transaction_btn = _primary_button("+ New Transaction")
+        self.receive_stock_btn.setIcon(svg_icon("package", INK, 18))
+        self.new_transaction_btn = _primary_button("New Transaction")
+        self.new_transaction_btn.setIcon(svg_icon("plus", "#FFFFFF", 18))
 
+        self.refresh_btn.setFixedSize(105, 40)
         self.export_btn.setFixedSize(130, 40)
         self.receive_stock_btn.setFixedSize(140, 40)
         self.new_transaction_btn.setFixedSize(160, 40)
+        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
         self.export_btn.clicked.connect(self.export_report_requested)
         self.receive_stock_btn.clicked.connect(self.receive_stock_requested)
         self.new_transaction_btn.clicked.connect(self.new_transaction_requested)
+        actions.addWidget(self.refresh_btn)
         actions.addWidget(self.export_btn)
         actions.addWidget(self.receive_stock_btn)
         actions.addWidget(self.new_transaction_btn)
@@ -643,19 +653,26 @@ class DashboardView(QWidget):
         today_str = QDate.currentDate().toString("dddd, MMMM d, yyyy")
         self.date_lbl = QLabel(f"  {today_str}")
         self.date_lbl.setStyleSheet(f"font-size: 12px; color: {INK}; font-weight: 600; {LABEL_RESET}")
-        self.branch_lbl = QLabel("  Main Branch")
+        self.branch_lbl = QLabel("Main Branch")
         self.branch_lbl.setStyleSheet(f"font-size: 12px; color: {INK}; font-weight: 600; {LABEL_RESET}")
-        self.sync_lbl = QLabel("  Synced just now")
+        self.sync_lbl = QLabel("Synced just now")
         self.sync_lbl.setStyleSheet(f"font-size: 12px; color: {MUTED}; {LABEL_RESET}")
 
         meta_row.addWidget(self.date_lbl)
         meta_row.addWidget(self._dot_sep())
+        self.branch_icon = QLabel()
+        self.branch_icon.setPixmap(svg_icon("building", INK, 15).pixmap(15, 15))
+        meta_row.addWidget(self.branch_icon)
         meta_row.addWidget(self.branch_lbl)
         meta_row.addWidget(self._dot_sep())
+        self.sync_icon = QLabel()
+        self.sync_icon.setPixmap(svg_icon("refresh", MUTED, 15).pixmap(15, 15))
+        meta_row.addWidget(self.sync_icon)
         meta_row.addWidget(self.sync_lbl)
         meta_row.addStretch()
 
-        self.notification_btn = QPushButton("🔔  Alerts: 0")
+        self.notification_btn = QPushButton("Alerts: 0")
+        self.notification_btn.setIcon(svg_icon("bell", GOLD_DARK, 16))
         self.notification_btn.setToolTip("Stock and expiry alerts")
         self.notification_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.notification_btn.setStyleSheet(f"""
@@ -685,11 +702,26 @@ class DashboardView(QWidget):
         return dot
 
     def set_branch(self, branch_name):
-        self.branch_lbl.setText(f"🏬  {branch_name}")
+        self.branch_lbl.setText(branch_name)
 
     def set_last_sync(self, when=None):
         when = when or datetime.now()
-        self.sync_lbl.setText(f"🔄  Synced at {when.strftime('%I:%M %p').lstrip('0')}")
+        self.sync_lbl.setText(f"Synced at {when.strftime('%I:%M %p').lstrip('0')}")
+
+    def _on_refresh_clicked(self):
+        self.refresh_btn.setEnabled(False)
+        self.refresh_btn.setText("Refreshing...")
+        QTimer.singleShot(0, self.refresh_requested.emit)
+
+    def finish_refresh(self, success):
+        self.refresh_btn.setText("Updated" if success else "Refresh failed")
+        if success:
+            self.set_last_sync()
+        QTimer.singleShot(2500, self._reset_refresh_button)
+
+    def _reset_refresh_button(self):
+        self.refresh_btn.setText("Refresh")
+        self.refresh_btn.setEnabled(True)
 
     def _build_kpi_row(self):
         row = QHBoxLayout()
@@ -1149,7 +1181,7 @@ class DashboardView(QWidget):
             self.card_expiring.sub_label.setText("Nothing expiring soon")
         self.card_expiring.set_sub_color(RED if expiring else GREEN)
 
-        self.notification_btn.setText(f"🔔  Alerts: {low_stock + expiring}")
+        self.notification_btn.setText(f"Alerts: {low_stock + expiring}")
         self.set_last_sync()
 
     def update_charts(self, transactions, daily_series=None):

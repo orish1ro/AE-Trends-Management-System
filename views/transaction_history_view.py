@@ -1303,7 +1303,7 @@ class OrderDetailDialog(_DetailDialog):
         grid.setColumnStretch(1, 1)
         lay.addLayout(grid)
 
-        # Receipt image (GCash / Online Banking). Cash sales have none.
+        # Receipt image for non-cash payments. Cash sales have none.
         if detail["receipt_path"]:
             lay.addWidget(_dlg_text("RECEIPT IMAGE", 10, 700, DLG_MUTED, wrap=False))
             lay.addWidget(_ReceiptPreview(detail["receipt_path"]), 0,

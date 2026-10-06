@@ -10,6 +10,7 @@ import base64
 
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
 from views.styled_dropdown import StyledComboBox
+from views.ui_icons import set_svg_icon, svg_icon
 
 RESET = "background: transparent; border: none;"
 
@@ -208,17 +209,18 @@ class ProductCard(QFrame):
         if archived:
             pass
         elif out_of_stock:
-            warning.setText("⚠  Out of stock, reorder now")
+            warning.setText("Out of stock, reorder now")
             warning.setStyleSheet("color: #6B655A; background: #EDEAE3; border: none; border-radius: 6px; font-size: 10px; font-weight: bold;")
         elif is_warn:
-            text = "⚠  Low stock, reorder now" if product["status"] == "Low Stock" else f"⚠  {product['status']}"
+            text = "Low stock, reorder now" if product["status"] == "Low Stock" else str(product["status"])
             warning.setText(text)
             warning.setStyleSheet("color: #A33F35; background: #FBE8E2; border: none; border-radius: 6px; font-size: 10px; font-weight: bold;")
         cl.addWidget(warning)
 
         cl.addStretch()
 
-        edit = QPushButton("↺  Restore product" if archived else "✎  Edit product")
+        edit = QPushButton("Restore product" if archived else "Edit product")
+        edit.setIcon(svg_icon("rotate-ccw" if archived else "pencil", "#FFFFFF", 15))
         edit.setCursor(Qt.CursorShape.PointingHandCursor)
         edit.setFixedHeight(32)
         edit.setStyleSheet("QPushButton { background: #C09E3B; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 12px; } QPushButton:hover { background: #A9872E; } QPushButton:pressed { background: #8F7225; }")
@@ -376,8 +378,9 @@ class Thumb(QWidget):
 
 
 class IconButton(QPushButton):
-    def __init__(self, text, tip, parent=None):
-        super().__init__(text, parent)
+    def __init__(self, icon_name, tip, parent=None):
+        super().__init__(parent)
+        self.setIcon(svg_icon(icon_name, "#5E554C", 17))
         self.setToolTip(tip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(34, 34)
@@ -515,13 +518,13 @@ class ProductRow(QFrame):
         al.addStretch()
 
         if archived:
-            restore = IconButton("↺", "Restore product")
+            restore = IconButton("rotate-ccw", "Restore product")
             restore.clicked.connect(lambda: self.restore_requested.emit(product))
             al.addWidget(restore)
         else:
-            edit = IconButton("✎", "Edit product")
+            edit = IconButton("pencil", "Edit product")
             edit.clicked.connect(lambda: self.edit_requested.emit(product))
-            more = IconButton("⋯", "More")
+            more = IconButton("more-vertical", "More")
             menu = QMenu(more)
             menu.setStyleSheet(
                 "QMenu { background: #FFFDFB; border: 1px solid #E6DECB; border-radius: 8px; padding: 6px; }"
@@ -548,10 +551,11 @@ class StatCard(QFrame):
         row = QHBoxLayout(self)
         row.setContentsMargins(20, 16, 20, 16)
         row.setSpacing(14)
-        badge = QLabel(icon)
+        badge = QLabel()
+        set_svg_icon(badge, icon, accent, 20)
         badge.setFixedSize(42, 42)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        badge.setStyleSheet(f"background: {tint}; border-radius: 12px; font-size: 16px; color: {accent};")
+        badge.setStyleSheet(f"background: {tint}; border-radius: 12px;")
         col = QVBoxLayout()
         col.setSpacing(3)
         title = QLabel(label)
@@ -625,14 +629,16 @@ class InventoryView(QWidget):
         rb = QHBoxLayout(self.restock_banner)
         rb.setContentsMargins(18, 13, 14, 13)
         rb.setSpacing(12)
-        restock_icon = QLabel("✓")
+        restock_icon = QLabel()
+        set_svg_icon(restock_icon, "check", "#FFFFFF", 14)
         restock_icon.setFixedSize(26, 26)
         restock_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        restock_icon.setStyleSheet("background: #2F7A4A; color: white; border-radius: 13px; font-size: 12px; font-weight: bold;")
+        restock_icon.setStyleSheet("background: #2F7A4A; border-radius: 13px;")
         self.restock_banner_text = QLabel("")
         self.restock_banner_text.setWordWrap(True)
         self.restock_banner_text.setStyleSheet(f"font-size: 13px; color: #215C37; font-weight: 600; {RESET}")
-        restock_close = QPushButton("×")
+        restock_close = QPushButton()
+        restock_close.setIcon(svg_icon("x", "#2F7A4A", 14))
         restock_close.setCursor(Qt.CursorShape.PointingHandCursor)
         restock_close.setFixedSize(24, 24)
         restock_close.setStyleSheet(
@@ -652,10 +658,10 @@ class InventoryView(QWidget):
         # ---- Overview stat cards ----
         stats_row = QHBoxLayout()
         stats_row.setSpacing(20)
-        self.stat_total = StatCard("Total Products", "📦", "#F3E7D3", INK)
-        self.stat_low = StatCard("Low Stock Items", "⚠", "#FBE8E2", "#A33F35")
-        self.stat_expiring = StatCard("Expiring Soon", "⏳", "#FBF0D5", GOLD_DARK)
-        self.stat_out = StatCard("Out of Stock", "⊘", "#EDEAE3", "#6B655A")
+        self.stat_total = StatCard("Total Products", "package", "#F3E7D3", INK)
+        self.stat_low = StatCard("Low Stock Items", "alert-triangle", "#FBE8E2", "#A33F35")
+        self.stat_expiring = StatCard("Expiring Soon", "hourglass", "#FBF0D5", GOLD_DARK)
+        self.stat_out = StatCard("Out of Stock", "box", "#EDEAE3", "#6B655A")
         for card in (self.stat_total, self.stat_low, self.stat_expiring, self.stat_out):
             stats_row.addWidget(card, 1)
         layout.addLayout(stats_row)
@@ -707,8 +713,10 @@ class InventoryView(QWidget):
         tl = QHBoxLayout(toggle)
         tl.setContentsMargins(3, 3, 3, 3)
         tl.setSpacing(2)
-        self.grid_btn = QPushButton("▦")
-        self.list_btn = QPushButton("☰")
+        self.grid_btn = QPushButton()
+        self.grid_btn.setIcon(svg_icon("grid", "#6B655A", 16))
+        self.list_btn = QPushButton()
+        self.list_btn.setIcon(svg_icon("list", "#6B655A", 16))
         for btn, tip in ((self.grid_btn, "Card view"), (self.list_btn, "Table view")):
             btn.setToolTip(tip)
             btn.setCheckable(True)
