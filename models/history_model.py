@@ -8,7 +8,8 @@ Nothing here writes to the database - this module only reads.
 """
 import os
 from datetime import datetime
-from utils.validators import PAYMENT_METHODS, ValidationError, clean_date_range
+from models.options_model import OptionsModel
+from utils.validators import ValidationError, clean_date_range
 
 
 def order_code(order_id):
@@ -62,17 +63,19 @@ class HistoryModel:
         with self.db.get_connection() as conn:
             staff = [r[0] for r in conn.execute("SELECT DISTINCT Name FROM Staff ORDER BY Name")]
 
-        # Platforms, payment methods, and statuses are fixed, canonical lists -
-        # not "whatever platform names happen to already exist in the Orders
-        # table so far". Deriving platforms from distinct existing data meant
-        # this dropdown could drift out of sync with the New Transaction
-        # form: a platform newly added there wouldn't show up here until an
-        # order actually used it, and a retired name (e.g. "TikTok Live",
-        # "FB/IG") would keep showing up here forever even after it was
-        # removed from New Transaction. Listing them directly here keeps the
-        # two screens showing the exact same set of platforms, always.
-        platforms = ["Walk-in", "Shopee", "TikTok Shop", "Lazada", "Facebook Live"]
-        payment_methods = list(PAYMENT_METHODS)
+        # Platforms and payment methods come straight from the Platform and
+        # Bank tables, so a platform or bank added from New Transaction (e.g.
+        # "RAGAPEE") appears in these filters automatically.
+        options = OptionsModel(self.db)
+        platforms = options.get_platforms(include_walk_in=True)
+        payment_methods = options.get_payment_methods()
+        with self.db.get_connection() as conn:
+            # Old orders may carry a method that is no longer in the lists.
+            for (method,) in conn.execute(
+                    "SELECT DISTINCT PaymentMethod FROM Payment "
+                    "WHERE PaymentMethod IS NOT NULL ORDER BY PaymentMethod"):
+                if method not in payment_methods:
+                    payment_methods.append(method)
         order_statuses = ["Completed", "Refunded", "Cancelled"]
         po_statuses = ["Pending", "Received", "Cancelled"]
 

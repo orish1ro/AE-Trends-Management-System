@@ -12,6 +12,8 @@ from PyQt6.QtGui import QColor
 from views.transaction_history_view import OrderDetailDialog  # noqa: F401
 from views.ui_icons import svg_icon
 
+from views.table_align import align_item, align_headers, TEXT, NUMBER, DATE, CENTER
+
 LABEL_RESET = "background: transparent; border: none;"
 
 class ItemsLinkButton(QPushButton):
@@ -153,6 +155,7 @@ class OrderStatusView(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(["ORDER ID", "CUSTOMER NAME", "ITEMS", "PLATFORM", "DATE", "TOTAL AMOUNT", "CURRENT STATUS", "ACTION"])
+        align_headers(self.table, TEXT, TEXT, TEXT, TEXT, DATE, NUMBER, CENTER, CENTER)
         
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -290,8 +293,8 @@ class OrderStatusView(QWidget):
             self.table.setCellWidget(row, 2, items_btn)
             
             self.table.setItem(row, 3, QTableWidgetItem(ord_item['order_type']))
-            self.table.setItem(row, 4, QTableWidgetItem(ord_item['order_date']))
-            self.table.setItem(row, 5, QTableWidgetItem(f"₱{ord_item['total_amount']:,.2f}"))
+            self.table.setItem(row, 4, align_item(QTableWidgetItem(ord_item['order_date']), DATE))
+            self.table.setItem(row, 5, align_item(QTableWidgetItem(f"₱{ord_item['total_amount']:,.2f}"), NUMBER))
             
             is_in_progress = ord_item['status'] in ("Pending", "Paid", "Prepared", "Shipped")
 

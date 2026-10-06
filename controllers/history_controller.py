@@ -24,6 +24,11 @@ class HistoryController:
         
         self.load()
 
+    def refresh_filters(self):
+        """Re-read platforms / payment methods / staff so anything newly added
+        (a new platform or bank) shows up in the filters straight away."""
+        self.view.refresh_filter_options(self.model.get_filter_options())
+
     @safe_slot("Transaction History Error")
     def load(self):
         self.current_page = 1

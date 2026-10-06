@@ -98,8 +98,7 @@ CREATE TABLE IF NOT EXISTS OrderDetails (
 CREATE TABLE IF NOT EXISTS Payment (
     PaymentID       INTEGER PRIMARY KEY AUTOINCREMENT,
     OrderID         INTEGER NOT NULL UNIQUE,
-    PaymentMethod   TEXT CHECK (PaymentMethod IN
-                    ('Cash','GCash','Maya','MariBank','BPI','GoTyme','Online Banking')),
+    PaymentMethod   TEXT,
     AmountPaid      REAL NOT NULL DEFAULT 0 CHECK (AmountPaid >= 0),
     PaymentDate     TEXT DEFAULT (datetime('now','localtime')),
     PaymentStatus   TEXT NOT NULL DEFAULT 'Unpaid'
@@ -143,7 +142,37 @@ CREATE TABLE IF NOT EXISTS PurchaseOrderDetails (
 -- ============================================================
 -- SEED DATA — Platforms (Only insert if empty)
 -- ============================================================
-INSERT OR IGNORE INTO Platform (PlatformID, PlatformName) VALUES 
-(1, 'Walk-in'), 
-(2, 'TikTok Live'), 
-(3, 'Facebook Live');
+INSERT OR IGNORE INTO Platform (PlatformName) VALUES
+('Walk-in'),
+('Shopee'),
+('TikTok Shop'),
+('Lazada'),
+('Facebook Live');
+
+-- ============================================================
+-- BANK  (banks offered under "Online Banking"; new ones are added from the app)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS Bank (
+    BankID    INTEGER PRIMARY KEY AUTOINCREMENT,
+    BankName  TEXT NOT NULL UNIQUE COLLATE NOCASE
+);
+
+INSERT OR IGNORE INTO Bank (BankName) VALUES
+('MariBank'),
+('BPI'),
+('GoTyme');
+
+-- ============================================================
+-- CATEGORY  (product categories; the owner can add and remove unused ones)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS Category (
+    CategoryID    INTEGER PRIMARY KEY AUTOINCREMENT,
+    CategoryName  TEXT NOT NULL UNIQUE COLLATE NOCASE
+);
+
+INSERT OR IGNORE INTO Category (CategoryName) VALUES
+('Clothing • Tops'),
+('Clothing • Bottoms'),
+('Clothing • Outerwear'),
+('Skincare • Face'),
+('Skincare • Treatment');

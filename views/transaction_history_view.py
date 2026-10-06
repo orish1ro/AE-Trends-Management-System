@@ -18,6 +18,20 @@ from PyQt6.QtCore import Qt, QDate, pyqtSignal, QPoint
 from PyQt6.QtGui import QPainter, QPolygon, QPixmap, QDesktopServices
 from PyQt6.QtCore import QUrl, QTimer
 
+from views.table_align import align_item, flags, TEXT, NUMBER, DATE, CENTER
+
+
+def _column_kind(header_text):
+    """text -> left, numbers/money -> right, dates -> centre."""
+    if header_text in ("QTY", "TOTAL"):
+        return NUMBER
+    if header_text in ("DATE", "DATE & TIME"):
+        return DATE
+    if header_text == "STATUS":
+        return CENTER
+    return TEXT
+
+
 LABEL_RESET = "background: transparent; border: none;"
 
 FILTER_CONTROL_STYLE = """
@@ -655,6 +669,24 @@ class TransactionHistoryView(QWidget):
             "All Staff",
         )
 
+    def refresh_filter_options(self, options):
+        """Refill the platform / payment / staff filters without resetting the
+        rest of the screen. The current selection is kept when it still exists."""
+        self._raw_options = options
+        for combo, values, all_label in (
+            (self.platform_filter, options["platforms"], "All Platforms"),
+            (self.payment_filter, options["payment_methods"], "All Payment Methods"),
+            (self.staff_filter, options["staff"], "All Staff"),
+        ):
+            chosen = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(all_label)
+            combo.addItems(values)
+            index = combo.findText(chosen)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+            combo.blockSignals(False)
+
     def clear_filters(self):
         self.search_input.blockSignals(True)
         self.search_input.clear()
@@ -758,13 +790,7 @@ class TransactionHistoryView(QWidget):
             header_item = self.table.horizontalHeaderItem(col)
             if header_item is None:
                 continue
-            if text in ("QTY", "STATUS"):
-                align = Qt.AlignmentFlag.AlignCenter
-            elif text == "TOTAL":
-                align = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            else:
-                align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-            header_item.setTextAlignment(align)
+            header_item.setTextAlignment(flags(_column_kind(text)))
 
         if hasattr(self, '_raw_options'):
             self.status_filter.blockSignals(True)
@@ -966,13 +992,7 @@ class TransactionHistoryView(QWidget):
 
                 header_item = self.table.horizontalHeaderItem(col)
                 header_text = header_item.text() if header_item else ""
-                if header_text == "QTY":
-                    h_align = Qt.AlignmentFlag.AlignHCenter
-                elif header_text == "TOTAL":
-                    h_align = Qt.AlignmentFlag.AlignRight
-                else:
-                    h_align = Qt.AlignmentFlag.AlignLeft
-                item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | h_align)
+                align_item(item, _column_kind(header_text))
 
                 if col == 0:                      # order / purchase ID stands out
                     id_font = item.font()

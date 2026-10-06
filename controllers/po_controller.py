@@ -16,6 +16,7 @@ class POController:
         # Connect the new Mark as Received button
         self.view.mark_received_requested.connect(self.handle_mark_received)
         self.view.cancel_requested.connect(self.handle_cancel)
+        self.view.order_again_requested.connect(self.handle_order_again)
 
         # Refresh the product dropdown from live inventory every time the
         # "New Purchase Order" panel is opened, so it always reflects
@@ -89,6 +90,17 @@ class POController:
         details = self.model.get_po_details(po_number)
         if details:
             self.view.show_order_details(details)
+
+    @safe_slot("Purchase Orders Error")
+    def handle_order_again(self, po_number):
+        """Order Again: open a new PO pre-filled from a received one."""
+        details = self.model.get_po_details(po_number)
+        if not details:
+            QMessageBox.warning(self.view, "Order Not Found",
+                                f"{po_number} could not be found. It may have been removed.")
+            return
+        self.refresh_suppliers()
+        self.view.prefill_from_po(details)
 
     def handle_mark_received(self, po_number):
         try:

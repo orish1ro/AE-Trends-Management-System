@@ -22,7 +22,12 @@ ORDER_STATUSES = ("Pending", "Paid", "Prepared", "Shipped",
 PO_STATUSES = ("Pending", "Received", "Cancelled")
 PAYMENT_METHODS = ("Cash", "GCash", "Maya", "MariBank", "BPI", "GoTyme",
                    "Online Banking")
-ONLINE_BANKS = ("MariBank", "BPI", "GoTyme")
+ONLINE_BANKS = ("MariBank", "BPI", "GoTyme")   # starter banks; more are added from the app
+BASE_PAYMENT_METHODS = ("Cash", "GCash", "Maya")
+LEGACY_PAYMENT_METHOD = "Online Banking"
+DEFAULT_PLATFORMS = ("Walk-in", "Shopee", "TikTok Shop", "Lazada", "Facebook Live")
+DEFAULT_CATEGORIES = ("Clothing • Tops", "Clothing • Bottoms", "Clothing • Outerwear",
+                      "Skincare • Face", "Skincare • Treatment")   # starter list; owner can add/remove
 ROLES = ("Owner", "Cashier", "Inventory Staff")
 
 # Allowed order-status moves. Anything not listed is rejected.

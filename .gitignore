@@ -9,3 +9,7 @@ ae_trends.db
 logs/
 /build/
 /dist/
+*.zip
+.venv-build/
+receipts/
+*.bak

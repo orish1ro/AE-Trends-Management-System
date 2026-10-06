@@ -12,6 +12,8 @@ from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
 from views.styled_dropdown import StyledComboBox
 from views.ui_icons import set_svg_icon, svg_icon
 
+from views.table_align import align_item, align_headers, TEXT, NUMBER, DATE, CENTER
+
 RESET = "background: transparent; border: none;"
 
 CARD_MIN_WIDTH = 205   # cards stretch evenly to fill the row, never narrower than this
@@ -166,6 +168,7 @@ class ProductCard(QFrame):
         price_row = QHBoxLayout()
         price_row.setSpacing(8)
         price = QLabel(f"₱{product['price']:,.2f}")
+        price.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         price.setStyleSheet(f"font-size: 15px; font-weight: bold; color: #A9872E; {RESET}")
         stock_color = "#A33F35" if kind in ("out", "warn") else "#5E554C"
         stock_lbl = QLabel(f"{stock_qty} in stock")
@@ -284,6 +287,7 @@ SORT_OPTIONS = [
     ("Newest Added", "date_added", True),
     ("Oldest Added", "date_added", False),
 ]
+NUMERIC_KEYS = ("price", "stock_qty")   # right-aligned columns (header and cells)
 ACTIONS_WIDTH = 96
 ROW_HEIGHT = 52
 H_PAD = 24
@@ -407,7 +411,7 @@ class TableHeader(QFrame):
             btn = QPushButton(text)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(
-                "QPushButton { background: transparent; border: none; text-align: left; padding: 0;"
+                f"QPushButton {{ background: transparent; border: none; text-align: {'right' if key in NUMERIC_KEYS else 'left'}; padding: 0;"
                 " color: #6B655A; font-size: 12px; font-weight: 600; }"
                 f"QPushButton:hover {{ color: {GOLD_DARK}; }}"
             )
@@ -502,11 +506,11 @@ class ProductRow(QFrame):
         qty.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {INK}; {RESET}")
         status = QLabel("Archived" if archived else label)
         status.setStyleSheet(f"font-size: 12px; color: {'#8A8173' if archived else text_c}; {RESET}")
+        sl.addStretch()          # numbers sit on the right edge of the column
         sl.addWidget(dot)
         sl.addWidget(qty)
         sl.addSpacing(4)
         sl.addWidget(status)
-        sl.addStretch()
         row.addWidget(stock_cell, COLUMNS[5][2])
 
         # actions
@@ -849,6 +853,16 @@ class InventoryView(QWidget):
         self.restock_banner_text.setText(label + detail)
         self.restock_banner.show()
         self._restock_timer.start(10000)
+
+    def set_category_options(self, categories):
+        """Refill the Category filter, keeping the current choice if it still exists."""
+        chosen = self.category_filter.currentText()
+        self.category_filter.blockSignals(True)
+        self.category_filter.clear()
+        self.category_filter.addItems(["Category: All"] + list(categories))
+        index = self.category_filter.findText(chosen)
+        self.category_filter.setCurrentIndex(index if index >= 0 else 0)
+        self.category_filter.blockSignals(False)
 
     def set_summary(self, total, low_stock, expiring_soon, out_of_stock):
         self.stat_total.set_value(total)

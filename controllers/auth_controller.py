@@ -72,13 +72,16 @@ class AuthController:
             QMessageBox.warning(self.login_view, "Login Failed", "Invalid username or password.")
 
     def handle_signup(self):
-        full_name = self.login_view.reg_name_input.text().strip()
+        first_name = " ".join(self.login_view.reg_first_name_input.text().split())
+        last_name = " ".join(self.login_view.reg_last_name_input.text().split())
         username = self.login_view.reg_username_input.text().strip()
         password = self.login_view.reg_password_input.text().strip()
 
-        if not full_name or not username or not password:
-            QMessageBox.warning(self.login_view, "Validation Error", "All fields are required.")
+        if not first_name or not last_name or not username or not password:
+            QMessageBox.warning(self.login_view, "Validation Error",
+                                "First name, last name, username and password are required.")
             return
+        full_name = f"{first_name} {last_name}"   # the Staff table keeps one Name column
 
         # Default new signups to Staff/Employee role
         try:
@@ -88,7 +91,8 @@ class AuthController:
             return
         if success:
             QMessageBox.information(self.login_view, "Success", "Account created successfully! You can now log in.")
-            self.login_view.reg_name_input.clear()
+            self.login_view.reg_first_name_input.clear()
+            self.login_view.reg_last_name_input.clear()
             self.login_view.reg_username_input.clear()
             self.login_view.reg_password_input.clear()
             self.login_view.stacked_cards.setCurrentIndex(0)
@@ -148,6 +152,7 @@ class AuthController:
         """An order was placed, confirmed, cancelled or its status changed,
         which changes stock: refresh transaction history AND the Inventory
         page so the stock numbers match everywhere."""
+        self.hist_ctrl.refresh_filters()
         self.hist_ctrl.load()
         self.inv_ctrl.load_products()
 

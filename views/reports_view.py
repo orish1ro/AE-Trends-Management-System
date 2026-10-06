@@ -12,6 +12,8 @@ from PyQt6.QtSvg import QSvgRenderer
 from views.styled_dropdown import StyledComboBox
 from views.report_charts import LineAreaChart, DonutChart
 
+from views.table_align import align_item, align_headers, TEXT, NUMBER, DATE, CENTER
+
 RESET = "background: transparent; border: none;"
 
 # ---- Brand palette (matches the app's dark sidebar / gold branding) ----
@@ -405,6 +407,7 @@ class ReportsView(QWidget):
         self.top_products_table = self._table(
             ["PRODUCT NAME", "UNITS SOLD", "COST", "REVENUE", "PROFIT", "MARGIN", "STATUS"]
         )
+        align_headers(self.top_products_table, TEXT, NUMBER, NUMBER, NUMBER, NUMBER, NUMBER, CENTER)
         self.top_products_table.setMinimumHeight(230)
         v.addWidget(self.top_products_table)
 
@@ -442,6 +445,7 @@ class ReportsView(QWidget):
         self.inventory_table = self._table(
             ["PRODUCT NAME", "CATEGORY", "CURRENT STOCK", "STOCK VALUE", "UNITS SOLD", "REORDER LEVEL", "ALERT STATUS"]
         )
+        align_headers(self.inventory_table, TEXT, TEXT, NUMBER, NUMBER, NUMBER, NUMBER, CENTER)
         self.inventory_table.setMinimumHeight(230)
         v.addWidget(self.inventory_table)
 
@@ -503,6 +507,7 @@ class ReportsView(QWidget):
         self.txn_table = self._table(
             ["TRANSACTION ID", "DATE", "CUSTOMER", "ITEMS", "PAYMENT METHOD", "TOTAL AMOUNT", "PROFIT", "STATUS"]
         )
+        align_headers(self.txn_table, TEXT, DATE, TEXT, NUMBER, TEXT, NUMBER, NUMBER, CENTER)
         self.txn_table.setMinimumHeight(300)
         self.txn_table.horizontalHeader().sectionClicked.connect(self._on_txn_sort)
         card_layout.addWidget(self.txn_table)
@@ -774,9 +779,9 @@ class ReportsView(QWidget):
         table.setRowCount(len(page_rows))
         for row_idx, data in enumerate(page_rows):
             table.setItem(row_idx, 0, SortableItem(data["id"], data["id"]))
-            table.setItem(row_idx, 1, SortableItem(data["date"], data["date_sort"]))
+            table.setItem(row_idx, 1, align_item(SortableItem(data["date"], data["date_sort"]), DATE))
             table.setItem(row_idx, 2, SortableItem(data["customer"], data["customer"]))
-            table.setItem(row_idx, 3, SortableItem(data["items"], data["items_count"]))
+            table.setItem(row_idx, 3, align_item(SortableItem(data["items"], data["items_count"]), NUMBER))
             table.setItem(row_idx, 4, SortableItem(data["payment"], data["payment"]))
             total_item = SortableItem(money(data["total"]), data["total"])
             total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -940,7 +945,7 @@ class ReportsView(QWidget):
         table.setRowCount(len(page_rows))
         for row, p in enumerate(page_rows):
             table.setItem(row, 0, QTableWidgetItem(p["name"]))
-            table.setItem(row, 1, QTableWidgetItem(f"{p['qty']} sold"))
+            table.setItem(row, 1, align_item(QTableWidgetItem(f"{p['qty']} sold"), NUMBER))
             cost_item = QTableWidgetItem(money(p.get("cost", 0.0)))
             cost_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             table.setItem(row, 2, cost_item)
@@ -990,12 +995,12 @@ class ReportsView(QWidget):
         for row, item in enumerate(page_rows):
             table.setItem(row, 0, QTableWidgetItem(item["name"]))
             table.setItem(row, 1, QTableWidgetItem(item["category"] or "—"))
-            table.setItem(row, 2, QTableWidgetItem(f"{item['stock']} pcs"))
+            table.setItem(row, 2, align_item(QTableWidgetItem(f"{item['stock']} pcs"), NUMBER))
             value_item = QTableWidgetItem(money(item["stock_value"]))
             value_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             table.setItem(row, 3, value_item)
-            table.setItem(row, 4, QTableWidgetItem(f"{item['units_sold']}"))
-            table.setItem(row, 5, QTableWidgetItem(f"{item['reorder_level']} pcs"))
+            table.setItem(row, 4, align_item(QTableWidgetItem(f"{item['units_sold']}"), NUMBER))
+            table.setItem(row, 5, align_item(QTableWidgetItem(f"{item['reorder_level']} pcs"), NUMBER))
             kind = {"Healthy": "success", "Low Stock": "warning", "Critical": "danger"}.get(item["status"], "muted")
             self._set_badge_cell(table, row, 6, item["status"], kind)
 

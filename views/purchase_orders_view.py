@@ -12,6 +12,8 @@ from views.transaction_history_view import ArrowDateEdit, FILTER_CONTROL_STYLE
 from views.responsive import clamp_dialog_min
 
 
+from views.table_align import align_item, align_headers, TEXT, NUMBER, DATE, CENTER
+
 # ---------------------------------------------------------------------------
 # Shared theme tokens (kept identical to the rest of the app)
 # ---------------------------------------------------------------------------
@@ -151,6 +153,7 @@ class PurchaseOrdersView(QWidget):
     order_details_requested = pyqtSignal(str)
     mark_received_requested = pyqtSignal(str)
     cancel_requested = pyqtSignal(str)
+    order_again_requested = pyqtSignal(str)      # po_number of a Received order
     submit_order_requested = pyqtSignal(dict)
     panel_open_requested = pyqtSignal()
     manage_suppliers_requested = pyqtSignal()
@@ -314,6 +317,7 @@ class PurchaseOrdersView(QWidget):
         self.history_table.setHorizontalHeaderLabels([
             "PO #", "SUPPLIER", "DATE ORDERED", "TOTAL", "STATUS", "ACTIONS",
         ])
+        align_headers(self.history_table, TEXT, TEXT, DATE, NUMBER, CENTER, CENTER)
         self.history_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
@@ -591,8 +595,15 @@ class PurchaseOrdersView(QWidget):
         add_products_btn.setStyleSheet(GOLD_FILLED_BTN_STYLE)
         add_products_btn.clicked.connect(self.add_item_row)
 
+        self.clear_items_btn = QPushButton("Clear All")
+        self.clear_items_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_items_btn.setStyleSheet(GOLD_OUTLINE_BTN_STYLE)
+        self.clear_items_btn.setToolTip("Remove every item row from this purchase order")
+        self.clear_items_btn.clicked.connect(self._clear_all_items)
+
         items_header.addWidget(self.items_count_lbl)
         items_header.addStretch()
+        items_header.addWidget(self.clear_items_btn)
         items_header.addWidget(add_products_btn)
         layout.addLayout(items_header)
 
@@ -943,6 +954,73 @@ class PurchaseOrdersView(QWidget):
             cost_field.setText(f"{price:.2f}")
             self._recalculate_totals()
 
+    def prefill_from_po(self, details):
+        """Order Again: open the New Purchase Order panel filled from an earlier
+        (received) PO - same supplier and items. Quantities and unit costs are
+        copied but stay editable; the delivery date starts at today."""
+        if self.side_panel.isVisible() and any(
+                row["qty"].text().strip() or row["cost"].text().strip()
+                for row in self.item_rows):
+            answer = QMessageBox.question(
+                self, "Replace Current Purchase Order?",
+                "The New Purchase Order form already has items.\n\n"
+                "Replace them with the items from " + details["po_number"] + "?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._open_new_po_panel()
+        self._reset_order_form()
+
+        index = self.supplier_combo.findText(details["supplier"])
+        missing_supplier = index < 0
+        self.supplier_combo.setCurrentIndex(max(0, index))
+
+        for item in details["items"]:
+            self.add_item_row()
+            row = self.item_rows[-1]
+            row["combo"].setEditText(item["name"])
+            row["qty"].setText(str(item["quantity"]))
+            if item.get("size"):
+                row["size"].setText(f"{item['size']:g}")
+            unit_index = row["unit"].findText(item.get("measure") or "")
+            if unit_index >= 0:
+                row["unit"].setCurrentIndex(unit_index)
+            row["cost"].setText(f"{item['unit_cost']:.2f}")
+        self._recalculate_totals()
+        self._update_items_count_label()
+
+        if missing_supplier:
+            QMessageBox.information(
+                self, "Order Again",
+                f"The supplier \"{details['supplier']}\" is no longer in your supplier list. "
+                "Please choose a supplier before saving.")
+
+    def _clear_all_items(self):
+        """Remove every item row (supplier and delivery date stay as they are)."""
+        if not self.item_rows:
+            return
+        has_data = any(
+            row["qty"].text().strip() or row["cost"].text().strip()
+            for row in self.item_rows
+        )
+        if has_data:
+            from PyQt6.QtWidgets import QMessageBox
+            answer = QMessageBox.question(
+                self, "Clear All Items?",
+                "Remove all items from this purchase order?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        for row in list(self.item_rows):
+            self.dynamic_items_layout.removeWidget(row["widget"])
+            row["widget"].deleteLater()
+        self.item_rows = []
+        self.empty_state_widget.setVisible(True)
+        self._update_items_count_label()
+        self._recalculate_totals()
+
     def _update_items_count_label(self):
         n = len(self.item_rows)
         self.items_count_lbl.setText(f"Order Items ({n} item{'s' if n != 1 else ''})")
@@ -1157,10 +1235,8 @@ class PurchaseOrdersView(QWidget):
             self.history_table.setItem(row, 2, QTableWidgetItem(po["date_ordered"]))
             self.history_table.setItem(row, 3, QTableWidgetItem(f"₱{po['total_cost']:,.2f}"))
 
-            for column in range(4):
-                self.history_table.item(row, column).setTextAlignment(
-                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
-                )
+            for column, kind in enumerate((TEXT, TEXT, DATE, NUMBER)):
+                align_item(self.history_table.item(row, column), kind)
 
             status_badge = QLabel(po["status"])
             status_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1252,6 +1328,12 @@ class PurchaseOrdersView(QWidget):
         receive_action.triggered.connect(
             lambda checked=False, po_number=po["po_number"]:
             self.mark_received_requested.emit(po_number)
+        )
+        again_action = menu.addAction("Order Again")
+        again_action.setEnabled(po["status"] == "Received")
+        again_action.triggered.connect(
+            lambda checked=False, po_number=po["po_number"]:
+            self.order_again_requested.emit(po_number)
         )
         cancel_action = menu.addAction("Cancel Order")
         cancel_action.setEnabled(po["status"] == "Pending")
@@ -1355,6 +1437,7 @@ class PurchaseOrdersView(QWidget):
         items_table = QTableWidget()
         items_table.setColumnCount(5)
         items_table.setHorizontalHeaderLabels(["ITEM", "QTY", "SIZE", "UNIT COST", "LINE TOTAL"])
+        align_headers(items_table, TEXT, NUMBER, NUMBER, NUMBER, NUMBER)
         items_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         items_table.verticalHeader().setVisible(False)
         items_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -1430,13 +1513,36 @@ class PurchaseOrdersView(QWidget):
             receive_btn.clicked.connect(dialog.accept)
             btn_row.addWidget(receive_btn)
 
+        reorder_available = details["status"] == "Received"
+        if reorder_available:
+            # Like Shopee's "Buy Again": start a new PO with the same supplier and items.
+            again_btn = QPushButton("Order Again")
+            again_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            again_btn.setMinimumWidth(150)
+            again_btn.setToolTip("Start a new purchase order with the same supplier and items")
+            again_btn.setStyleSheet(
+                f"background: {GOLD}; color: white; font-weight: bold; "
+                "padding: 11px 28px; border: none; border-radius: 6px; font-size: 13px;"
+            )
+            again_btn.clicked.connect(dialog.accept)
+            again_btn.clicked.connect(
+                lambda checked=False: self.order_again_requested.emit(details["po_number"])
+            )
+            btn_row.addWidget(again_btn)
+
         btn_row.addStretch()
         close_btn = QPushButton("Close")
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.setStyleSheet(
-            f"background: {GOLD}; color: white; font-weight: bold; "
-            "padding: 9px 22px; border: none; border-radius: 5px;"
-        )
+        if reorder_available:       # keep one clear primary action
+            close_btn.setStyleSheet(
+                f"background: white; color: {TEXT_DARK2}; font-weight: bold; "
+                f"padding: 11px 28px; border: 1px solid {BORDER_ALT}; border-radius: 6px;"
+            )
+        else:
+            close_btn.setStyleSheet(
+                f"background: {GOLD}; color: white; font-weight: bold; "
+                "padding: 9px 22px; border: none; border-radius: 5px;"
+            )
         close_btn.clicked.connect(dialog.accept)
         btn_row.addWidget(close_btn)
 

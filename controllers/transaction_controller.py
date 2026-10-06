@@ -3,11 +3,15 @@ from views.order_status_view import OrderDetailDialog
 import re
 from utils.errors import report, safe_slot, friendly_message, log
 from utils.validators import ValidationError
+from models.options_model import OptionsModel
+from views.manage_options_dialog import ManageOptionsDialog
 
 
 class TransactionController:
-    def __init__(self, txn_model, inv_model, record_view, status_view, on_order_saved=None):
+    def __init__(self, txn_model, inv_model, record_view, status_view, on_order_saved=None,
+                 options_model=None):
         self.txn_model = txn_model
+        self.options_model = options_model or OptionsModel(txn_model.db)
         self.inv_model = inv_model
         self.record_view = record_view
         self.status_view = status_view
@@ -17,6 +21,7 @@ class TransactionController:
         self.record_view.item_added_to_cart.connect(self.handle_add_to_cart)
         self.record_view.confirm_btn.clicked.connect(self.handle_confirm_transaction)
         self.record_view.refresh_catalog_btn.clicked.connect(self.load_catalog)
+        self.record_view.manage_options_requested.connect(self.open_manage_options)
         
         # Order Status Connections
         self.status_view.filter_changed.connect(self.load_orders)
@@ -28,7 +33,52 @@ class TransactionController:
         self.status_view.cancel_requested.connect(self.handle_order_cancellation)
         self.status_view.view_requested.connect(self.open_order_popup)
 
+        self.load_options()
         self.load_orders()
+
+    def load_options(self):
+        """Fill the platform and bank dropdowns from the database."""
+        self.record_view.set_payment_options(
+            self.options_model.get_platforms(), self.options_model.get_banks())
+
+    @safe_slot("Manage Options Error", parent_attr="record_view")
+    def open_manage_options(self, kind):
+        """Add / remove platforms or banks. Only unused ones can be removed."""
+        unit = {"platform": "orders", "bank": "payments"}[kind]
+        dialog = ManageOptionsDialog(
+            self.record_view, kind, unit,
+            loader=lambda: self.options_model.entries(kind),
+            adder=lambda name: self.options_model.add(kind, name),
+            remover=lambda name: self.options_model.remove(kind, name))
+        dialog.exec()
+        self.load_options()
+        self.record_view.forget_removed_options(kind, dialog.removed)
+
+    def _confirm_new_option(self, kind, name):
+        """Returns the name to save, or None if the user backs out.
+        A name that is not in the list yet is added only after the user
+        confirms it (guards against typos creating junk entries)."""
+        if kind == "platform":
+            known = self.options_model.canonical_platform(name)
+            adder = self.options_model.add_platform
+        else:
+            known = self.options_model.canonical_payment(name)
+            adder = self.options_model.add_bank
+        if known:
+            return known
+        answer = QMessageBox.question(
+            self.record_view, f"Add New {kind.title()}?",
+            f"\"{name}\" is not in your {kind} list yet.\n\n"
+            f"Add it as a new {kind}? It will then appear in every dropdown and filter.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            self.record_view.show_form_error(
+                f"Pick a {kind} from the list, or confirm adding the new one.")
+            return None
+        added = adder(name)
+        self.load_options()
+        return added
 
     @safe_slot("Catalog Error", parent_attr="record_view")
     def load_catalog(self):
@@ -91,6 +141,18 @@ class TransactionController:
             if not payment["method"]:
                 self.record_view.show_form_error("Please select a payment method.")
                 return
+
+            # A platform or bank typed in that is not on the list yet: confirm, then add it.
+            if is_online:
+                platform = self._confirm_new_option("platform", platform)
+                if platform is None:
+                    return
+                order_type = platform
+            if payment["method"] not in ("Cash", "GCash", "Maya"):
+                bank = self._confirm_new_option("bank", payment["method"])
+                if bank is None:
+                    return
+                payment["method"] = bank
 
             if payment["method"] == "Cash" and payment["amount_paid"] < total:
                 self.record_view.show_form_error("Amount paid must cover the transaction total.")

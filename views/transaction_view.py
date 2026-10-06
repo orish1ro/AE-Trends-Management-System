@@ -19,7 +19,7 @@ import re
 from PyQt6.QtCore import QDateTime, QPointF, QRectF, QRegularExpression, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QColor, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
                          QPixmap, QPolygonF, QRegularExpressionValidator, QShortcut)
-from PyQt6.QtWidgets import (QButtonGroup, QDialog, QFileDialog, QFrame, QGridLayout,
+from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QGridLayout,
                              QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
                              QVBoxLayout, QWidget)
 
@@ -770,6 +770,7 @@ class ReceiptDropBox(QFrame):
 # --------------------------------------------------------------------------- #
 class TransactionView(QWidget):
     item_added_to_cart = pyqtSignal(dict)   # kept: the controller connects to it
+    manage_options_requested = pyqtSignal(str)   # "platform" or "bank": open the Manage dialog
 
     def __init__(self):
         super().__init__()
@@ -984,6 +985,44 @@ class TransactionView(QWidget):
         left.addWidget(card, 1)
         return left
 
+    def _with_manage_button(self, combo, kind):
+        """The dropdown with a small Manage button beside it, so the owner can add
+        or remove platforms / banks that are no longer used."""
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        lay.addWidget(combo, 1)
+        btn = QPushButton("Manage")
+        btn.setFixedHeight(40)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip(f"Add or remove {kind}s")
+        btn.setStyleSheet("QPushButton { background: #F3EEE3; color: #4A4238; border: 1px solid #DDD5C3; "
+            "border-radius: 6px; padding: 0 12px; font-weight: 600; font-size: 12px; } "
+            "QPushButton:hover { background: #E9E2D2; }")
+        btn.clicked.connect(lambda _=False: self.manage_options_requested.emit(kind))
+        lay.addWidget(btn)
+        return box
+
+    def forget_removed_options(self, kind, names):
+        """After entries were removed in the Manage dialog: if one of them is still
+        selected (or saved in the other mode's form), reset it instead of leaving a
+        name that no longer exists."""
+        gone = {n.lower() for n in names}
+        if not gone:
+            return
+        combo = self.platform_combo if kind == "platform" else self.bank_combo
+        if combo.currentText().strip().lower() in gone:
+            if kind == "platform":
+                combo.setCurrentIndex(0 if combo.count() else -1)
+            else:
+                combo.setCurrentIndex(-1)
+                combo.setEditText("")
+        key = "platform" if kind == "platform" else "payment"
+        for state in self._mode_forms.values():
+            if (state.get(key) or "").strip().lower() in gone:
+                state[key] = ""
+
     def _field_group(self, label_widget, input_widget):
         box = QWidget()
         lay = QVBoxLayout(box)
@@ -1090,9 +1129,15 @@ class TransactionView(QWidget):
         self.phone_label = label("", 11, 600, MUTED, rich=True)
         self.address_label = label("", 11, 600, MUTED, rich=True)
         self.platform_label = label("", 11, 600, MUTED, rich=True)
+        # Editable: pick a platform or just type a new one (e.g. a new app).
         self.platform_combo = StyledComboBox()
+        self.platform_combo.setEditable(True)
+        self.platform_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.platform_combo.addItems(PLATFORMS)
         self.platform_combo.setFixedHeight(40)
+        self.platform_combo.lineEdit().setMaxLength(40)
+        self.platform_combo.setCurrentIndex(0)
+        self.platform_combo.lineEdit().setPlaceholderText("Select or type a platform...")
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
@@ -1100,7 +1145,8 @@ class TransactionView(QWidget):
         grid.addWidget(self._field_group(self.name_label, self.name_input), 0, 0)
         grid.addWidget(self._field_group(self.phone_label, self.phone_input), 0, 1)
         grid.addWidget(self._field_group(self.address_label, self.address_input), 1, 0, 1, 2)
-        self.platform_group = self._field_group(self.platform_label, self.platform_combo)
+        self.platform_group = self._field_group(self.platform_label,
+                                             self._with_manage_button(self.platform_combo, "platform"))
         grid.addWidget(self.platform_group, 2, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
@@ -1156,12 +1202,16 @@ class TransactionView(QWidget):
         bank_lay.setContentsMargins(0, 0, 0, 0)
         bank_lay.setSpacing(5)
         bank_lay.addWidget(label("Bank", 11, 600, MUTED))
+        # Editable: pick a bank or just type a new one.
         self.bank_combo = StyledComboBox()
-        self.bank_combo.addItem("Select a bank", "")
-        for bank in ONLINE_BANKS:
-            self.bank_combo.addItem(bank, bank)
+        self.bank_combo.setEditable(True)
+        self.bank_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.bank_combo.addItems(ONLINE_BANKS)
         self.bank_combo.setFixedHeight(40)
-        bank_lay.addWidget(self.bank_combo)
+        self.bank_combo.lineEdit().setMaxLength(40)
+        self.bank_combo.setCurrentIndex(-1)
+        self.bank_combo.lineEdit().setPlaceholderText("Select or type a bank...")
+        bank_lay.addWidget(self._with_manage_button(self.bank_combo, "bank"))
         self.bank_selection.setVisible(False)
         body_lay.addWidget(self.bank_selection)
 
@@ -1387,7 +1437,7 @@ class TransactionView(QWidget):
     # ------------------------------------------------------------------ #
     @staticmethod
     def _empty_form_state():
-        return {"name": "", "phone": "", "address": "", "platform_index": 0,
+        return {"name": "", "phone": "", "address": "", "platform": "",
                 "payment": "Cash", "amount_paid": "", "reference": "", "receipt": ""}
 
     @property
@@ -1406,7 +1456,7 @@ class TransactionView(QWidget):
             "name": self.name_input.text(),
             "phone": self.phone_input.text(),
             "address": self.address_input.text(),
-            "platform_index": self.platform_combo.currentIndex(),
+            "platform": self.platform_combo.currentText().strip(),
             "payment": self.get_selected_payment(),
             "amount_paid": self.amount_paid_input.text(),
             "reference": self.reference_input.text(),
@@ -1418,7 +1468,10 @@ class TransactionView(QWidget):
         self.name_input.setText(state["name"])
         self.phone_input.setText(state["phone"])
         self.address_input.setText(state["address"])
-        self.platform_combo.setCurrentIndex(state["platform_index"])
+        if state["platform"]:
+            self.platform_combo.setEditText(state["platform"])
+        else:
+            self.platform_combo.setCurrentIndex(0 if self.platform_combo.count() else -1)
         payment = state["payment"]
         if payment == "Cash":
             self.pay_cash.setChecked(True)
@@ -1426,8 +1479,11 @@ class TransactionView(QWidget):
             self.pay_gcash.setChecked(True)
         else:
             self.pay_bank.setChecked(True)
-            bank_index = self.bank_combo.findData(payment)
-            self.bank_combo.setCurrentIndex(max(0, bank_index))
+            if payment and payment != "Online Banking":
+                self.bank_combo.setEditText(payment)
+            else:
+                self.bank_combo.setCurrentIndex(-1)
+                self.bank_combo.setEditText("")
         self.amount_paid_input.setText(state["amount_paid"])
         self.reference_input.setText(state["reference"])
         self._receipt_path = state["receipt"]
@@ -1468,7 +1524,24 @@ class TransactionView(QWidget):
             return "Cash"
         if self.pay_gcash.isChecked():
             return "GCash"
-        return self.bank_combo.currentData() or ""
+        return self.bank_combo.currentText().strip()
+
+    def set_payment_options(self, platforms, banks):
+        """Refill the platform and bank lists from the database, keeping
+        whatever is currently selected or typed."""
+        for combo, values in ((self.platform_combo, platforms), (self.bank_combo, banks)):
+            typed = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(list(values))
+            combo.blockSignals(False)
+            if typed:
+                combo.setEditText(typed)
+            elif combo is self.platform_combo and combo.count():
+                combo.setCurrentIndex(0)
+            else:
+                combo.setCurrentIndex(-1)
+        self._update_payment_ui()
 
     def _update_payment_ui(self):
         cash = self.pay_cash.isChecked()

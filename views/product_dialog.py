@@ -393,6 +393,7 @@ class ProductDialog(QDialog):
 
     po_item_selected = pyqtSignal(dict)
     archive_requested = pyqtSignal()
+    manage_categories_requested = pyqtSignal()   # owner wants to add / remove categories
 
     def __init__(self, parent=None, product=None, categories=None, po_items=None, existing_products=None,
                  suppliers=None):
@@ -508,6 +509,17 @@ class ProductDialog(QDialog):
         f.setFixedHeight(FIELD_H)
         return f
 
+    def set_categories(self, categories, dropped=()):
+        """Refill the Category dropdown (after Manage). `dropped` names that were just
+        removed are cleared from the field; anything else typed is kept."""
+        typed = self.cat_in.currentText()
+        self.cat_in.blockSignals(True)
+        self.cat_in.clear()
+        self.cat_in.addItems(list(categories))
+        self.cat_in.blockSignals(False)
+        gone = {d.lower() for d in dropped}
+        self.cat_in.setEditText("" if typed.strip().lower() in gone else typed)
+
     def _build_form_panel(self, categories):
         card = self._card("formCard")
         if not self.is_edit:
@@ -614,6 +626,21 @@ class ProductDialog(QDialog):
         self.cat_in.addItems(categories)
         self.cat_in.setCurrentText(self.product.get("category", ""))
         self.cat_in.setFixedHeight(FIELD_H)
+        manage_cat = QPushButton("Manage")
+        manage_cat.setFixedHeight(FIELD_H)
+        manage_cat.setCursor(Qt.CursorShape.PointingHandCursor)
+        manage_cat.setToolTip("Add or remove categories")
+        manage_cat.setStyleSheet(
+            "QPushButton { background: #F3EEE3; color: #4A4238; border: 1px solid #DDD5C3; "
+            "border-radius: 6px; padding: 0 12px; font-weight: 600; font-size: 12px; } "
+            "QPushButton:hover { background: #E9E2D2; }")
+        manage_cat.clicked.connect(lambda _=False: self.manage_categories_requested.emit())
+        self.cat_row = QWidget()
+        cat_lay = QHBoxLayout(self.cat_row)
+        cat_lay.setContentsMargins(0, 0, 0, 0)
+        cat_lay.setSpacing(8)
+        cat_lay.addWidget(self.cat_in, 1)
+        cat_lay.addWidget(manage_cat)
 
         self.price_in = self._field("e.g. 120.00", self._fmt_number(self.product.get("price")))
         self.stock_in = self._field("e.g. 10", self._fmt_number(self.product.get("stock_qty"), as_int=True))
@@ -627,7 +654,7 @@ class ProductDialog(QDialog):
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(18)
         grid.addLayout(labeled_field("SKU", self.sku_in), 0, 0)
-        grid.addLayout(labeled_field("Category", self.cat_in, required=True), 0, 1)
+        grid.addLayout(labeled_field("Category", self.cat_row, required=True), 0, 1)
         grid.addLayout(labeled_field("Price (₱)", self.price_in, required=True), 1, 0)
         grid.addLayout(labeled_field("Stock Quantity", self.stock_in, required=True), 1, 1)
         grid.addLayout(labeled_field("Reorder Level", self.reorder_in), 2, 0)

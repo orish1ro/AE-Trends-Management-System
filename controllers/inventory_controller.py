@@ -1,11 +1,14 @@
 from PyQt6.QtWidgets import QMessageBox
 from views.product_dialog import ProductDialog
 from utils.errors import report, safe_slot
+from models.options_model import OptionsModel
+from views.manage_options_dialog import ManageOptionsDialog
 from utils.validators import ValidationError
 
 class InventoryController:
-    def __init__(self, model, view, on_data_changed=None, po_model=None):
+    def __init__(self, model, view, on_data_changed=None, po_model=None, options_model=None):
         self.model = model
+        self.options_model = options_model or OptionsModel(model.db)
         self.view = view
         self.po_model = po_model  # optional: lets "Add Product" offer a
                                    # "import from Purchase Order" dropdown
@@ -25,8 +28,21 @@ class InventoryController:
         self.view.restore_product_requested.connect(self.restore_product)
         self.view.archive_product_requested.connect(lambda product: self.archive_product(product))
 
+    def _sync_category_filter(self):
+        """Keep the Category filter in step with the products: a category typed
+        into Add New Product (e.g. "Accessories") shows up here automatically."""
+        groups = []
+        for product in self.model.get_all_products():
+            main = (product.get("category") or "").split("\u2022")[0].strip()
+            if main and main.lower() not in (g.lower() for g in groups):
+                groups.append(main)
+        first = [g for g in ("Clothing", "Skincare") if g.lower() in (x.lower() for x in groups)]
+        rest = sorted((g for g in groups if g not in first), key=str.lower)
+        self.view.set_category_options(first + rest)
+
     @safe_slot("Inventory Error")
     def load_products(self):
+        self._sync_category_filter()
         search = self.view.search_input.text().strip()
         category = self.view.category_filter.currentText()
         status = self.view.status_filter.currentText()
@@ -96,8 +112,29 @@ class InventoryController:
             except Exception:
                 suppliers = []  # the supplier list is a convenience too
 
+        try:
+            categories = self.options_model.get_categories()
+        except Exception:
+            categories = None   # fall back to the dialog's own list; never block adding a product
+
         dialog = ProductDialog(self.view, product=product, po_items=po_items,
-                               existing_products=existing_products, suppliers=suppliers)
+                               existing_products=existing_products, suppliers=suppliers,
+                               categories=categories)
+
+        def manage_categories():
+            try:
+                manager = ManageOptionsDialog(
+                    dialog, "category", "products",
+                    loader=lambda: self.options_model.entries("category"),
+                    adder=lambda n: self.options_model.add("category", n),
+                    remover=lambda n: self.options_model.remove("category", n),
+                    plural="categories")
+                manager.exec()
+                dialog.set_categories(self.options_model.get_categories(), dropped=manager.removed)
+            except Exception as exc:  # noqa: BLE001
+                report(exc, dialog, "Manage Categories Error", context="manage categories")
+
+        dialog.manage_categories_requested.connect(manage_categories)
 
         def find_existing_by_name(name):
             for p in self.model.get_all_products():
@@ -156,6 +193,11 @@ class InventoryController:
                 else:
                     self.model.add_product(name, cat, price, stock, reorder, exp, sku=values.get("sku", ""), image_path=image_value,
                                            supplier=values.get("supplier", ""))
+                try:   # a category typed here joins the saved list, so it can be managed later
+                    if cat and cat.strip():
+                        self.options_model.add_category(cat)
+                except ValidationError:
+                    pass
                 dialog.accept()
                 self._notify_change()
             except ValidationError as e:

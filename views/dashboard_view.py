@@ -13,6 +13,8 @@ from views.styled_dropdown import StyledComboBox
 from views.transaction_history_view import status_badge, STATUS_COLORS
 from views.ui_icons import svg_icon
 
+from views.table_align import align_item, align_headers, TEXT, NUMBER, DATE, CENTER
+
 LABEL_RESET = "background: transparent; border: none;"
 
 # --- Palette --------
@@ -967,6 +969,7 @@ class DashboardView(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["TRANSACTION ID", "DATE", "CUSTOMER", "ITEMS", "PAYMENT METHOD", "TOTAL", "STATUS"]
         )
+        align_headers(self.table, TEXT, DATE, TEXT, TEXT, TEXT, NUMBER, CENTER)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -1102,7 +1105,7 @@ class DashboardView(QWidget):
         self.table.setRowCount(len(page_items))
         for row, txn in enumerate(page_items):
             self.table.setItem(row, 0, QTableWidgetItem(txn.get('order_code', '—')))
-            self.table.setItem(row, 1, QTableWidgetItem(txn.get('order_date', '—')))
+            self.table.setItem(row, 1, align_item(QTableWidgetItem(txn.get('order_date', '—')), DATE))
             self.table.setItem(row, 2, QTableWidgetItem(txn.get('customer_name', '—')))
 
             items_text = txn.get('items', '—')
@@ -1113,7 +1116,7 @@ class DashboardView(QWidget):
             self.table.setItem(row, 4, QTableWidgetItem(txn.get('payment_method') or '—'))
 
             total_item = QTableWidgetItem(f"₱{txn.get('total_amount', 0):,.2f}")
-            total_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            align_item(total_item, NUMBER)
             self.table.setItem(row, 5, total_item)
 
             self.table.setCellWidget(row, 6, status_badge(txn.get('status', '—')))

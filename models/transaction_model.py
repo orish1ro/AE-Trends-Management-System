@@ -5,7 +5,7 @@ import sqlite3
 import uuid
 from datetime import datetime
 
-from utils.validators import (ValidationError, PAYMENT_METHODS, check_choice,
+from utils.validators import (ValidationError, BASE_PAYMENT_METHODS, LEGACY_PAYMENT_METHOD, check_choice,
                               check_order_transition, clean_name, clean_order_code,
                               clean_text, to_float, to_int)
 
@@ -200,6 +200,18 @@ class TransactionModel:
         )
         return cur.lastrowid
 
+    @staticmethod
+    def _known_payment_method(conn, name):
+        """Cash / GCash / Maya, any bank in the Bank table, or the old generic
+        'Online Banking'. Returns the stored spelling; anything else is rejected."""
+        banks = [r[0] for r in conn.execute("SELECT BankName FROM Bank ORDER BY BankID")]
+        allowed = list(BASE_PAYMENT_METHODS) + banks + [LEGACY_PAYMENT_METHOD]
+        match = next((m for m in allowed if m.lower() == name.lower()), None)
+        if match is None:
+            raise ValidationError("Payment method is not a recognised option. "
+                                  "Pick one from the list or add the bank first.")
+        return match
+
     def _platform_id_for(self, conn, order_type):
         row = conn.execute(
             "SELECT PlatformID FROM Platform WHERE PlatformName = ?", (order_type,)
@@ -266,7 +278,7 @@ class TransactionModel:
             raise ValidationError("Contact Number must be exactly 11 digits.")
         address = clean_text(address, "Delivery address", required=False, max_len=255)
         order_type = clean_text(order_type, "Platform", max_len=50)
-        payment_method = check_choice(payment_method, "Payment method", PAYMENT_METHODS)
+        payment_method = clean_text(payment_method, "Payment method", max_len=50)
         reference_number = clean_text(reference_number, "Reference number",
                                       required=False, max_len=50)
         receipt_image = clean_text(receipt_image, "Receipt image", required=False, max_len=500)
@@ -274,6 +286,7 @@ class TransactionModel:
             raise ValidationError("Online orders need a customer name, contact number and address.")
 
         with self.db.get_connection() as conn:
+            payment_method = self._known_payment_method(conn, payment_method)
             cart = self._validate_cart(conn, cart_items)
             # Recompute the total from database prices; ignore the screen's number.
             real_total = round(sum(i["price"] * i["qty"] for i in cart), 2)
