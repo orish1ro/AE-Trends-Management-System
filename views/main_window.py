@@ -1,5 +1,6 @@
 from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QStackedWidget, QFrame
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QRectF
+from PyQt6.QtGui import QPixmap, QPainter, QPainterPath
 from views.dashboard_view import DashboardView
 from views.transaction_view import TransactionView
 from views.inventory_view import InventoryView
@@ -9,12 +10,39 @@ from views.reports_view import ReportsView
 from views.transaction_history_view import TransactionHistoryView
 from views.responsive import fit_window, ResponsivePage
 from views.nav_icons import nav_icon, ICON_SIZE
+from utils.paths import resource_path
 
 SIDEBAR_BG = "#241E1C"
 SIDEBAR_HOVER = "#312A27"
 SIDEBAR_TEXT = "#A39B95"
 SIDEBAR_SECTION = "#6E6560"
 GOLD = "#C09E3B"
+LOGO_SIZE = 46
+
+
+def circular_logo(size=LOGO_SIZE):
+    """The real AE Trends logo (ae-logo.jpg) cropped to a crisp circle, or None if missing."""
+    source = QPixmap(resource_path("ae-logo.jpg"))
+    if source.isNull():
+        return None
+    side = min(source.width(), source.height())
+    square = source.copy((source.width() - side) // 2, (source.height() - side) // 2, side, side)
+    ratio = 2  # render at 2x so it stays sharp on high-DPI screens
+    px = size * ratio
+    square = square.scaled(px, px, Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+    out = QPixmap(px, px)
+    out.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(out)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    clip = QPainterPath()
+    clip.addEllipse(QRectF(0, 0, px, px))
+    painter.setClipPath(clip)
+    painter.drawPixmap(0, 0, square)
+    painter.end()
+    out.setDevicePixelRatio(ratio)
+    return out
 
 
 class MainWindow(QMainWindow):
@@ -45,10 +73,15 @@ class MainWindow(QMainWindow):
         # Brand Logo Header
         brand_row = QHBoxLayout()
         brand_row.setSpacing(10)
-        mark = QLabel("AE")
-        mark.setFixedSize(34, 34)
+        mark = QLabel()
+        mark.setFixedSize(LOGO_SIZE, LOGO_SIZE)
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mark.setStyleSheet(f"background: {GOLD}; color: #201A18; font-weight: 800; font-size: 13px; border-radius: 9px;")
+        logo_pixmap = circular_logo()
+        if logo_pixmap is not None:
+            mark.setPixmap(logo_pixmap)
+        else:  # logo file missing: fall back to the old text badge
+            mark.setText("AE")
+            mark.setStyleSheet(f"background: {GOLD}; color: #201A18; font-weight: 800; font-size: 13px; border-radius: 9px;")
         brand_text = QVBoxLayout()
         brand_text.setSpacing(0)
         logo = QLabel("AE Trends")

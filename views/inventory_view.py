@@ -3,7 +3,7 @@ import math
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QScrollArea, QGridLayout, QFrame, QProgressBar, QGraphicsDropShadowEffect,
-    QSizePolicy, QStackedWidget, QMenu,
+    QSizePolicy, QStackedWidget, QMenu, QDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF, QEvent
 import base64
@@ -98,11 +98,15 @@ class ProductHero(QWidget):
 
 
 class ProductCard(QFrame):
+    view_requested = pyqtSignal(dict)
     edit_requested = pyqtSignal(dict)
     restore_requested = pyqtSignal(dict)
 
     def __init__(self, product, parent=None, archived=False):
         super().__init__(parent)
+        self.product = product
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click to view product details")
         stock_qty = product["stock_qty"]
         out_of_stock = stock_qty <= 0
         is_warn = (not out_of_stock) and product["status"] in ("Low Stock", "Expiring Soon", "Expired")
@@ -239,6 +243,13 @@ class ProductCard(QFrame):
         if hasattr(self, "badge"):
             self.badge.move(self.width() - self.badge.width() - 12, 12)
         super().resizeEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        # a plain click anywhere on the row/card (buttons handle their own clicks)
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(event.position().toPoint())):
+            self.view_requested.emit(self.product)
+        super().mouseReleaseEvent(event)
 
 
 # =====================================================================
@@ -433,6 +444,7 @@ class TableHeader(QFrame):
 
 
 class ProductRow(QFrame):
+    view_requested = pyqtSignal(dict)
     edit_requested = pyqtSignal(dict)
     restore_requested = pyqtSignal(dict)
     archive_requested = pyqtSignal(dict)
@@ -440,6 +452,8 @@ class ProductRow(QFrame):
     def __init__(self, product, archived=False):
         super().__init__()
         self.product = product
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click to view product details")
         self.setObjectName("productRow")
         self.setFixedHeight(ROW_HEIGHT)
         self.setStyleSheet(
@@ -560,6 +574,13 @@ class ProductRow(QFrame):
             al.addWidget(more)
         row.addWidget(actions)
 
+    def mouseReleaseEvent(self, event):
+        # a plain click anywhere on the row/card (buttons handle their own clicks)
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(event.position().toPoint())):
+            self.view_requested.emit(self.product)
+        super().mouseReleaseEvent(event)
+
 
 class StatCard(QFrame):
     def __init__(self, label, icon, tint, accent=INK):
@@ -599,6 +620,201 @@ SCROLL_STYLE = (
     "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; } "
     "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
 )
+
+
+class DetailImage(QWidget):
+    """Large rounded product photo for the details popup (initials when there is no photo)."""
+
+    def __init__(self, product, width=236, height=300, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(width, height)
+        self._pixmap = ProductHero._load_pixmap(product.get("image_path", "") or "")
+        self._initials = "".join(p[0] for p in product["name"].split()[:2]).upper()
+
+    def paintEvent(self, event):
+        w, h = self.width(), self.height()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 14, 14)
+        p.setClipPath(clip)
+        p.fillRect(self.rect(), QColor("#F3E7D3"))
+        if not self._pixmap.isNull():
+            s = self._pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                    Qt.TransformationMode.SmoothTransformation)
+            p.drawPixmap((w - s.width()) // 2, (h - s.height()) // 2, s)
+        else:
+            p.setPen(QColor("#8B6820"))
+            p.setFont(QFont("Arial", 40, QFont.Weight.Bold))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._initials)
+        p.setClipping(False)
+        p.setPen(QColor("#E6DECB"))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 14, 14)
+        p.end()
+
+
+def _hline():
+    line = QFrame()
+    line.setFixedHeight(1)
+    line.setStyleSheet("background: #EFE8D8; border: none;")
+    return line
+
+
+class ProductDetailDialog(QDialog):
+    """Read-only product details. `edit_clicked` is True when the user pressed Edit."""
+
+    def __init__(self, product, archived=False, parent=None):
+        super().__init__(parent)
+        self.edit_clicked = False
+        self.setWindowTitle("Product Details")
+        self.setModal(True)
+        self.setMinimumWidth(760)
+        self.setStyleSheet("QDialog { background: #FBF8F1; }")
+
+        state = stock_state(product)
+        dot_c, text_c, label = STOCK_STATE[state]
+        if archived:
+            dot_c, text_c, label = "#B7AF9E", "#8A8173", "Archived"
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(30, 28, 30, 22)
+        root.setSpacing(20)
+
+        body = QHBoxLayout()
+        body.setSpacing(30)
+        body.addWidget(DetailImage(product), 0, Qt.AlignmentFlag.AlignTop)
+
+        info = QVBoxLayout()
+        info.setSpacing(8)
+
+        brand = (product.get("brand") or "").strip()
+        if brand:
+            brand_lbl = QLabel(brand.upper())
+            brand_lbl.setStyleSheet(
+                f"font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: {GOLD_DARK}; {RESET}")
+            info.addWidget(brand_lbl)
+
+        name = QLabel(product["name"])
+        name.setWordWrap(True)
+        name.setStyleSheet(f"font-size: 22px; font-weight: 800; color: {INK}; {RESET}")
+        info.addWidget(name)
+
+        badges = QHBoxLayout()
+        badges.setSpacing(8)
+        pill = QLabel(f"<span style='color:{dot_c};'>&#9679;</span>&nbsp;&nbsp;{label}")
+        pill.setTextFormat(Qt.TextFormat.RichText)
+        pill.setFixedHeight(24)
+        pill.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        pill.setStyleSheet(
+            f"color: {text_c}; background: {_mix(dot_c, '#FFFFFF', 0.86)}; "
+            f"border: 1px solid {_mix(dot_c, '#FFFFFF', 0.6)}; border-radius: 12px; "
+            "padding: 0px 12px; font-size: 12px; font-weight: 700;")
+        badges.addWidget(pill)
+        if product.get("category"):
+            badges.addWidget(category_chip(product["category"]))
+        badges.addStretch()
+        info.addLayout(badges)
+        info.addSpacing(6)
+
+        # ---- key numbers as tiles ----
+        def tile(caption, value, color=INK):
+            box = QFrame()
+            box.setObjectName("statTile")
+            box.setStyleSheet(
+                "QFrame#statTile { background: #FFFFFF; border: 1px solid #EBE3D0; border-radius: 12px; }")
+            lay = QVBoxLayout(box)
+            lay.setContentsMargins(14, 10, 14, 11)
+            lay.setSpacing(2)
+            cap = QLabel(caption.upper())
+            cap.setStyleSheet(f"font-size: 10px; font-weight: 700; letter-spacing: 1px; color: {MUTED}; {RESET}")
+            val = QLabel(value)
+            val.setStyleSheet(f"font-size: 19px; font-weight: 800; color: {color}; {RESET}")
+            lay.addWidget(cap)
+            lay.addWidget(val)
+            return box
+
+        stock = max(product["stock_qty"], 0)
+        tiles = QHBoxLayout()
+        tiles.setSpacing(10)
+        tiles.addWidget(tile("Price", f"\u20b1{product['price']:,.2f}", GOLD_DARK), 1)
+        tiles.addWidget(tile("In stock", f"{stock} pcs", text_c if not archived else INK), 1)
+        tiles.addWidget(tile("Units sold", f"{product.get('units_sold', 0)}"), 1)
+        info.addLayout(tiles)
+        info.addSpacing(6)
+
+        # ---- details list ----
+        def fmt_date(value):
+            value = (value or "").strip()
+            return value[:10] if value and value != "-" else ""
+
+        size_group = " \u00b7 ".join(x for x in (product.get("size"), product.get("for_group")) if x)
+        reorder = product.get("reorder_level")
+        rows = [
+            ("SKU", product.get("sku")),
+            ("Size / For", size_group),
+            ("Supplier", product.get("supplier")),
+            ("Reorder level", f"{reorder} pcs" if reorder is not None else ""),
+            ("Expiration date", fmt_date(product.get("expiration_date"))),
+            ("Date added", fmt_date(product.get("date_added"))),
+        ]
+        rows = [(k, v) for k, v in rows if v]      # hide fields that were never filled in
+        for index, (key, value) in enumerate(rows):
+            if index == 0:
+                info.addWidget(_hline())
+            line = QHBoxLayout()
+            line.setContentsMargins(0, 7, 0, 7)
+            k = QLabel(key)
+            k.setFixedWidth(130)
+            k.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {MUTED}; {RESET}")
+            v = QLabel(str(value))
+            v.setWordWrap(True)
+            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            v.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {INK}; {RESET}")
+            line.addWidget(k, 0, Qt.AlignmentFlag.AlignTop)
+            line.addWidget(v, 1)
+            info.addLayout(line)
+            info.addWidget(_hline())
+        info.addStretch()
+        body.addLayout(info, 1)
+        root.addLayout(body)
+
+        # ---- footer ----
+        root.addWidget(_hline())
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        hint = QLabel("Press Esc to close")
+        hint.setStyleSheet(f"font-size: 11px; color: {MUTED}; {RESET}")
+        buttons.addWidget(hint)
+        buttons.addStretch()
+        close = QPushButton("Close")
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setFixedHeight(38)
+        close.setMinimumWidth(100)
+        close.setStyleSheet(
+            "QPushButton { background: #FFFFFF; color: #2A2421; border: 1px solid #E0D6BF; "
+            "border-radius: 9px; font-size: 13px; font-weight: 600; padding: 0 18px; }"
+            "QPushButton:hover { background: #F7F1E3; }")
+        close.clicked.connect(self.reject)
+        buttons.addWidget(close)
+        if not archived:
+            edit = QPushButton("Edit Product")
+            edit.setIcon(svg_icon("pencil", "#FFFFFF", 15))
+            edit.setCursor(Qt.CursorShape.PointingHandCursor)
+            edit.setFixedHeight(38)
+            edit.setMinimumWidth(140)
+            edit.setStyleSheet(
+                "QPushButton { background: #C09E3B; color: white; border: none; border-radius: 9px; "
+                "font-size: 13px; font-weight: bold; padding: 0 18px; }"
+                "QPushButton:hover { background: #A9872E; } QPushButton:pressed { background: #8F7225; }")
+            edit.clicked.connect(self._edit)
+            buttons.addWidget(edit)
+        root.addLayout(buttons)
+
+    def _edit(self):
+        self.edit_clicked = True
+        self.accept()
 
 
 class InventoryView(QWidget):
@@ -958,6 +1174,12 @@ class InventoryView(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+    def show_product_details(self, product):
+        dialog = ProductDetailDialog(product, archived=self.showing_archived, parent=self.window())
+        dialog.exec()
+        if dialog.edit_clicked:
+            self.edit_product_requested.emit(product)
+
     def _render_page(self):
         products = self._sorted_products()
         total = len(products)
@@ -975,6 +1197,7 @@ class InventoryView(QWidget):
         if self.table_mode:
             for product in page_products:
                 row = ProductRow(product, archived=self.showing_archived)
+                row.view_requested.connect(self.show_product_details)
                 row.edit_requested.connect(self.edit_product_requested)
                 row.restore_requested.connect(self.restore_product_requested)
                 row.archive_requested.connect(self.archive_product_requested)
@@ -983,6 +1206,7 @@ class InventoryView(QWidget):
         else:
             for product in page_products:
                 card = ProductCard(product, archived=self.showing_archived)
+                card.view_requested.connect(self.show_product_details)
                 card.edit_requested.connect(self.edit_product_requested)
                 card.restore_requested.connect(self.restore_product_requested)
                 self._cards.append(card)
