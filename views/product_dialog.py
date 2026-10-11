@@ -650,7 +650,7 @@ class ProductDialog(QDialog):
             self.sku_in.setStyleSheet(FIELD_STYLE + f"QLineEdit {{ background: {GOLD_BG}; color: {TEXT_MUTED}; }}")
 
         self.cat_in = StyledComboBox()
-        self.cat_in.setEditable(True)
+        self.cat_in.setEditable(False)
         self.cat_in.addItems(categories)
         self.cat_in.setCurrentText(self.product.get("category", ""))
         self.cat_in.setFixedHeight(FIELD_H)

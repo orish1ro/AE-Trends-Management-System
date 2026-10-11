@@ -839,7 +839,7 @@ class PurchaseOrdersView(QWidget):
         row_layout.setSpacing(ITEM_COL_SPACING)
         outer_layout.addLayout(row_layout)
 
-        prod_combo = StyledComboBox()
+        prod_combo = StyledComboBox(fit_content=False)
         prod_combo.setEditable(True)
         prod_combo.setMinimumWidth(120)
         prod_combo.setSizePolicy(

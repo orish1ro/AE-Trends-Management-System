@@ -24,9 +24,14 @@ class StyledComboBox(QComboBox):
     the AE Trends visual style.
     """
 
-    def __init__(self, parent=None, compact=False):
+    def __init__(self, parent=None, compact=False, fit_content=True):
         super().__init__(parent)
         self._compact = compact
+        self._fit_content = fit_content
+        if not fit_content:
+            self.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
 
         view = QListView()
         view.setUniformItemSizes(True)
@@ -163,7 +168,8 @@ class StyledComboBox(QComboBox):
     def _update_text_font(self, *_):
         """Kept for compatibility. Text is no longer shrunk; the widget is
         widened to fit instead (see _fit_width)."""
-        self._fit_width()
+        if self._fit_content:
+            self._fit_width()
 
     def _needed_width(self):
         """Width required to show the longest item completely."""
@@ -183,7 +189,7 @@ class StyledComboBox(QComboBox):
 
     def _fit_width(self, *_):
         """Never let a fixed/minimum width clip the text: widen if needed."""
-        if getattr(self, "_fitting", False):
+        if not self._fit_content or getattr(self, "_fitting", False):
             return
         self._fitting = True
         try:
@@ -202,12 +208,14 @@ class StyledComboBox(QComboBox):
 
     def sizeHint(self):
         hint = super().sizeHint()
-        hint.setWidth(max(hint.width(), self._needed_width()))
+        if self._fit_content:
+            hint.setWidth(max(hint.width(), self._needed_width()))
         return hint
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
-        hint.setWidth(max(hint.width(), self._needed_width()))
+        if self._fit_content:
+            hint.setWidth(max(hint.width(), self._needed_width()))
         return hint
 
     def setEditable(self, editable):
