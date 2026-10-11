@@ -12,6 +12,7 @@ The controller talks to this view through a small set of names that MUST stay:
     show_transaction_success(), populate_catalog(), add_to_selected()
 """
 import base64
+import html
 import math
 import os
 import re
@@ -596,9 +597,15 @@ class ProductCard(QFrame):
 
         info = QVBoxLayout()
         info.setSpacing(3)
-        name = label(product.get("name", ""), 13, 700, INK, wrap=True)
-        name.setMaximumHeight(36)
-        name.setToolTip(product.get("name", ""))
+        product_name = str(product.get("name", ""))
+        name = label(
+            f'<p style="margin: 0; line-height: 130%;">{html.escape(product_name)}</p>',
+            13, 700, INK, wrap=True, rich=True,
+        )
+        name.setWordWrap(True)
+        name.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        name.setContentsMargins(0, 2, 0, 0)
+        name.setToolTip(product_name)
         sku = label(f"SKU: {product.get('sku') or '-'}", 10, 500, MUTED)
         tag_text = " \u00b7 ".join(x for x in (product.get("brand"), product.get("size"),
                                                product.get("for_group")) if x)
