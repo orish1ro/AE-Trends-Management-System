@@ -1,4 +1,3 @@
-import csv
 from datetime import datetime, timedelta
 
 from PyQt6.QtCore import QDate
@@ -50,7 +49,6 @@ class ReportController:
         self._last_to = None
 
         self.report_view.filters_changed.connect(self.load_reports)
-        self.report_view.export_requested.connect(self.export_report)
         self.report_view.pl_granularity_changed.connect(self.change_pl_granularity)
 
     # ------------------------------------------------------------------ #
@@ -570,109 +568,3 @@ class ReportController:
         preset = self.dashboard_view.date_range.currentText()
         success = self.load_dashboard_range(preset)
         self.dashboard_view.finish_refresh(success is True)
-
-    # ------------------------------------------------------------------ #
-    # EXPORT
-    # ------------------------------------------------------------------ #
-    _EXPORT_HEADERS = ["Order", "Date", "Customer", "Type", "Items", "Payment", "Total", "Profit", "Status"]
-
-    @staticmethod
-    def _safe_cell(value):
-        """Stops a customer name like '=HYPERLINK(...)' from running as a
-        formula when the export is opened in Excel/Sheets."""
-        text = "" if value is None else str(value)
-        return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
-
-    def _export_dicts(self):
-        return [
-            {
-                "Order": row["order"],
-                "Date": row["date"],
-                "Customer": self._safe_cell(row["customer"]),
-                "Type": self._safe_cell(row["type"]),
-                "Items": row["items_count"],
-                "Payment": self._safe_cell(row["payment"]),
-                "Total": f"{row['total']:.2f}",
-                "Profit": f"{row['profit']:.2f}",
-                "Status": row["status"],
-            }
-            for row in self.current_rows
-        ]
-
-    def export_report(self, fmt, path):
-        if not self.current_rows:
-            QMessageBox.information(self.report_view, "Nothing to Export",
-                                    "There are no rows in the current report.")
-            return
-        if fmt not in ("csv", "excel", "pdf"):
-            QMessageBox.warning(self.report_view, "Export Failed",
-                                f"'{fmt}' is not a supported export format.")
-            return
-        if not path or not str(path).strip():
-            return   # the save dialog was cancelled
-        ext = {"csv": ".csv", "excel": ".xlsx", "pdf": ".pdf"}[fmt]
-        if not str(path).lower().endswith(ext):
-            path = f"{path}{ext}"
-        try:
-            if fmt == "csv":
-                self._export_csv(path)
-            elif fmt == "excel":
-                self._export_excel(path)
-            else:
-                self._export_pdf(path)
-        except Exception as exc:  # noqa: BLE001 -- logged, shown in plain words
-            report(exc, self.report_view, "Export Failed", context=f"export_report {fmt}")
-
-    def _export_csv(self, path):
-        with open(path, "w", newline="", encoding="utf-8-sig") as file:
-            writer = csv.DictWriter(file, fieldnames=self._EXPORT_HEADERS)
-            writer.writeheader()
-            writer.writerows(self._export_dicts())
-
-    def _export_excel(self, path):
-        try:
-            from openpyxl import Workbook
-            from openpyxl.styles import Font
-        except ImportError:
-            QMessageBox.warning(
-                self.report_view, "Excel Export Unavailable",
-                "Excel export needs the 'openpyxl' package.\nInstall it with: pip install openpyxl",
-            )
-            return
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Sales Report"
-        ws.append(self._EXPORT_HEADERS)
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-        for row in self._export_dicts():
-            ws.append([row[h] for h in self._EXPORT_HEADERS])
-        for column_cells in ws.columns:
-            width = max(len(str(c.value)) for c in column_cells if c.value is not None) + 2
-            ws.column_dimensions[column_cells[0].column_letter].width = min(max(width, 10), 32)
-        wb.save(path)
-
-    def _export_pdf(self, path):
-        try:
-            from reportlab.lib import colors
-            from reportlab.lib.pagesizes import landscape, letter
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-            from reportlab.lib.styles import getSampleStyleSheet
-        except ImportError:
-            QMessageBox.warning(
-                self.report_view, "PDF Export Unavailable",
-                "PDF export needs the 'reportlab' package.\nInstall it with: pip install reportlab",
-            )
-            return
-        doc = SimpleDocTemplate(path, pagesize=landscape(letter))
-        styles = getSampleStyleSheet()
-        data = [self._EXPORT_HEADERS] + [[row[h] for h in self._EXPORT_HEADERS] for row in self._export_dicts()]
-        table = Table(data, repeatRows=1)
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#C7A53B")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E7E0D2")),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#FAF7F0")]),
-        ]))
-        doc.build([Paragraph("AE Trends — Sales Report", styles["Title"]), Spacer(1, 12), table])

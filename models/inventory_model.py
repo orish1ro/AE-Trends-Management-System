@@ -5,8 +5,8 @@ so this file computes a stock status on the fly instead of storing one.
 Change REORDER_LEVEL below if you want a different low-stock threshold."""
 from datetime import datetime, timedelta
 
-from utils.validators import (ValidationError, clean_date, clean_name, clean_sku,
-                              clean_text, to_float, to_int, MAX_QTY)
+from utils.validators import (ValidationError, clean_date, normalize_category, clean_name, clean_sku,
+                              clean_text, to_float, to_int, MAX_QTY, clean_clothing_attrs)
 
 REORDER_LEVEL = 10          # below or equal to this = "Low Stock"
 EXPIRING_WITHIN_DAYS = 60    # within this many days = "Expiring Soon"
@@ -45,14 +45,22 @@ class InventoryModel:
                 # 1 = a brand-new product that came from a purchase order and that
                 # staff hasn't added yet, so it stays hidden until they add it.
                 "IsPendingReceipt": "INTEGER NOT NULL DEFAULT 0",
+                # Brand for any product; ClothingSize (S/M/L/XL) and ForGroup
+                # (Men/Women/Kids) only for Clothing.
+                "Brand": "TEXT",
+                "ClothingSize": "TEXT",
+                "ForGroup": "TEXT",
             }
             for name, definition in migrations.items():
                 if name not in columns:
                     conn.execute(f"ALTER TABLE Product ADD COLUMN {name} {definition}")
             conn.commit()
 
-    def get_all_products(self, search="", category="All", status="All", archived=False):
+    def get_all_products(self, search="", category="All", status="All", archived=False,
+                         hide_out_of_stock=False, only_out_of_stock=False):
         """archived=False -> normal products; archived=True -> only archived ones.
+        hide_out_of_stock=True drops products with 0 stock (they are auto-hidden from
+        Inventory / New Transaction); only_out_of_stock=True returns just those.
         Brand-new products that only exist because of a purchase order are never
         listed until staff adds them through Add New Product."""
         # UnitsSold = total quantity on orders that were not Cancelled / Refunded.
@@ -76,11 +84,17 @@ class InventoryModel:
               AND COALESCE(p.IsPendingReceipt, 0) = 0"""
         params = []
         if search:
-            query += " AND (ProductName LIKE ? OR SKU LIKE ?)"
-            params.extend([f"%{search}%", f"%{search}%"])
-        if category not in ("All", "Category: All"):
-            query += " AND Category LIKE ?"
-            params.append(f"%{category}%")
+            query += " AND (ProductName LIKE ? OR SKU LIKE ? OR Brand LIKE ?)"
+            params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+        if category not in (None, "", "All", "Category: All"):
+            if category == "__uncategorized__":
+                query += " AND TRIM(COALESCE(Category, '')) = ''"
+            elif "\u2022" in category:           # a full "Clothing \u2022 Tops"
+                query += " AND Category = ? COLLATE NOCASE"
+                params.append(category.strip())
+            else:                                # a whole group, e.g. everything under Clothing
+                query += " AND (Category = ? COLLATE NOCASE OR Category LIKE ?)"
+                params.extend([category.strip(), f"{category.strip()} \u2022%"])
         query += " ORDER BY ProductName"
 
         with self.db.get_connection() as conn:
@@ -88,10 +102,18 @@ class InventoryModel:
 
         products = []
         for r in rows:
+            qty = r["StockQuantity"] or 0
+            if hide_out_of_stock and qty <= 0:
+                continue
+            if only_out_of_stock and qty > 0:
+                continue
             reorder_level = r["ReorderLevel"] or REORDER_LEVEL
             computed_status = compute_status(r["StockQuantity"], r["ExpirationDate"], reorder_level)
-            if status not in ("All", "Status: All Stock") and computed_status != status:
-                continue
+            if status not in ("All", "Status: All Stock"):
+                # "Expiring Soon" also lists Expired items, matching the Inventory card count
+                wanted = ("Expiring Soon", "Expired") if status == "Expiring Soon" else (status,)
+                if computed_status not in wanted:
+                    continue
             # Supplier = the product's own supplier when one was set; otherwise the
             # supplier on its latest Received purchase order. "General Supplier" is only
             # a placeholder the app uses when nothing is known, so it shows as blank.
@@ -111,6 +133,9 @@ class InventoryModel:
                 "status": computed_status,
                 "units_sold": r["UnitsSold"] or 0,
                 "date_added": r["DateAdded"] or "",
+                "brand": r["Brand"] or "",
+                "size": r["ClothingSize"] or "",
+                "for_group": r["ForGroup"] or "",
             })
         return products
 
@@ -135,11 +160,12 @@ class InventoryModel:
         return conn.execute("INSERT INTO Supplier (SupplierName) VALUES (?)", (name,)).lastrowid
 
     def _validate_product(self, conn, name, category, price, stock, reorder, exp_date,
-                          sku, image_path, supplier, product_id=None):
+                          sku, image_path, supplier, product_id=None,
+                          brand="", clothing_size="", for_group=""):
         """Checks every product field and returns the cleaned values.
         Raises ValidationError with a message the user can act on."""
         name = clean_name(name, "Product name")
-        category = clean_text(category, "Category", required=False, max_len=50)
+        category = normalize_category(clean_text(category, "Category", required=False, max_len=50))
         price = to_float(price, "Price")
         stock = to_int(stock, "Stock quantity")
         reorder = to_int(reorder if str(reorder).strip() != "" else 10, "Reorder level")
@@ -148,6 +174,8 @@ class InventoryModel:
         image_path = clean_text(
             image_path, "Image path", required=False, max_len=36_000_000)
         supplier = clean_text(supplier, "Supplier", required=False, max_len=100)
+        brand = clean_text(brand, "Brand", required=False, max_len=50)
+        clothing_size, for_group = clean_clothing_attrs(category, clothing_size, for_group)
 
         dup = conn.execute(
             "SELECT ProductID FROM Product WHERE LOWER(ProductName) = LOWER(?) "
@@ -161,13 +189,16 @@ class InventoryModel:
                 (sku, product_id or -1)).fetchone()
             if dup:
                 raise ValidationError(f"SKU '{sku}' is already used by '{dup['ProductName']}'.")
-        return name, category, price, stock, reorder, exp_date, sku, image_path, supplier
+        return (name, category, price, stock, reorder, exp_date, sku, image_path, supplier,
+                brand, clothing_size, for_group)
 
-    def add_product(self, name, category, price, stock, reorder, exp_date, sku="", image_path="", supplier=""):
+    def add_product(self, name, category, price, stock, reorder, exp_date, sku="", image_path="",
+                    supplier="", brand="", clothing_size="", for_group=""):
         with self.db.get_connection() as conn:
-            (name, category, price, stock, reorder, exp_date, sku, image_path,
-             supplier) = self._validate_product(conn, name, category, price, stock, reorder,
-                                                exp_date, sku, image_path, supplier)
+            (name, category, price, stock, reorder, exp_date, sku, image_path, supplier,
+             brand, clothing_size, for_group) = self._validate_product(
+                conn, name, category, price, stock, reorder, exp_date, sku, image_path,
+                supplier, brand=brand, clothing_size=clothing_size, for_group=for_group)
             supplier_id = self._supplier_id_for(conn, supplier)
             # A purchase order may have already created a hidden product with this
             # name. Fill that one in (and reveal it) instead of making a duplicate.
@@ -180,20 +211,23 @@ class InventoryModel:
                 conn.execute(
                     """UPDATE Product SET ProductName=?, Category=?, Price=?, StockQuantity=?,
                        ReorderLevel=?, ExpirationDate=?, SKU=?, ImagePath=?, SupplierID=?,
+                       Brand=?, ClothingSize=?, ForGroup=?,
                        IsPendingReceipt=0, LastEditedAt=datetime('now') WHERE ProductID=?""",
                     (name, category, price, stock, reorder,
                      None if exp_date in ("-", "") else exp_date,
-                     sku or f"SKU-{pid:04d}", image_path or None, supplier_id, pid))
+                     sku or f"SKU-{pid:04d}", image_path or None, supplier_id,
+                     brand or None, clothing_size or None, for_group or None, pid))
                 conn.commit()
                 return
             cursor = conn.execute(
                 """INSERT INTO Product (SupplierID, StaffID, ProductName, Category,
                                         Price, StockQuantity, ExpirationDate, SKU,
-                                        ImagePath, ReorderLevel)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                        ImagePath, ReorderLevel, Brand, ClothingSize, ForGroup)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (supplier_id, self.staff_id, name, category, price, stock,
                  None if exp_date in ("-", "") else exp_date, sku or None,
-                 image_path or None, reorder),
+                 image_path or None, reorder, brand or None, clothing_size or None,
+                 for_group or None),
             )
             if not sku:
                 product_id = cursor.lastrowid
@@ -203,23 +237,27 @@ class InventoryModel:
                 )
             conn.commit()
 
-    def update_product(self, product_id, name, sku, category, price, stock, reorder, exp_date, image_path="", supplier=""):
+    def update_product(self, product_id, name, sku, category, price, stock, reorder, exp_date,
+                       image_path="", supplier="", brand="", clothing_size="", for_group=""):
         with self.db.get_connection() as conn:
             if not conn.execute("SELECT 1 FROM Product WHERE ProductID = ?", (product_id,)).fetchone():
                 raise ValidationError("This product no longer exists. Refresh and try again.")
-            (name, category, price, stock, reorder, exp_date, sku, image_path,
-             supplier) = self._validate_product(conn, name, category, price, stock, reorder,
-                                                exp_date, sku, image_path, supplier,
-                                                product_id=product_id)
+            (name, category, price, stock, reorder, exp_date, sku, image_path, supplier,
+             brand, clothing_size, for_group) = self._validate_product(
+                conn, name, category, price, stock, reorder, exp_date, sku, image_path,
+                supplier, product_id=product_id, brand=brand,
+                clothing_size=clothing_size, for_group=for_group)
             if (supplier or "").strip():   # blank = leave the supplier as it is
                 conn.execute("UPDATE Product SET SupplierID=? WHERE ProductID=?",
                              (self._supplier_id_for(conn, supplier), product_id))
             conn.execute(
                 """UPDATE Product SET ProductName=?, SKU=?, Category=?, Price=?,
                    StockQuantity=?, ReorderLevel=?, ExpirationDate=?, ImagePath=?,
+                   Brand=?, ClothingSize=?, ForGroup=?,
                    LastEditedAt=datetime('now') WHERE ProductID=?""",
                 (name, sku or None, category, price, stock, reorder,
-                 None if exp_date in ("", "-") else exp_date, image_path or None, product_id),
+                 None if exp_date in ("", "-") else exp_date, image_path or None,
+                 brand or None, clothing_size or None, for_group or None, product_id),
             )
             conn.commit()
 

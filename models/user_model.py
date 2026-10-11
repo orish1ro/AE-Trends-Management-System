@@ -33,14 +33,14 @@ class UserModel:
             "username": row["Username"],
         }
 
-    def register_user(self, username, password, full_name, role="Cashier"):
+    def register_user(self, username, password, full_name, role="Staff"):
         """Creates a new Staff login. Raises ValidationError for bad input.
         Returns False only when the username is already taken."""
         username = clean_username(username)
         password = check_password(password)
         full_name = clean_name(full_name, "Full name")
         if role not in VALID_ROLES:
-            role = "Cashier"
+            role = "Staff"
         check_choice(role, "Role", VALID_ROLES)
         if password.lower() == username.lower():
             raise ValidationError("Password cannot be the same as the username.")

@@ -332,7 +332,11 @@ class OrderStatusView(QWidget):
             # nothing is written to the database until this button is
             # clicked. Picking any of the in-progress statuses still saves
             # immediately, same as before, since those aren't destructive.
-            btn = QPushButton("Confirm Transaction" if is_in_progress else "View")
+            # The button gets its container as parent straight away. Calling setVisible()
+            # on a button with no parent makes Windows open it as its own tiny blank
+            # window (the stray pop-up seen right after login).
+            btn_container = QWidget()
+            btn = QPushButton("Confirm Transaction" if is_in_progress else "View", btn_container)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self._style_action_button(btn, is_cancel_style=False)
             if is_in_progress:
@@ -347,7 +351,6 @@ class OrderStatusView(QWidget):
                 lambda checked, oc=order_code, cb=combo, ip=is_in_progress: self._on_action_clicked(oc, cb, ip)
             )
             
-            btn_container = QWidget()
             btn_layout = QHBoxLayout(btn_container)
             btn_layout.setContentsMargins(5, 2, 5, 2)
             btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)

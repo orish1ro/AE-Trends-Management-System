@@ -204,7 +204,8 @@ class TransactionModel:
     def _known_payment_method(conn, name):
         """Cash / GCash / Maya, any bank in the Bank table, or the old generic
         'Online Banking'. Returns the stored spelling; anything else is rejected."""
-        banks = [r[0] for r in conn.execute("SELECT BankName FROM Bank ORDER BY BankID")]
+        banks = [r[0] for r in conn.execute(
+            "SELECT BankName FROM Bank WHERE COALESCE(IsHidden, 0) = 0 ORDER BY BankID")]
         allowed = list(BASE_PAYMENT_METHODS) + banks + [LEGACY_PAYMENT_METHOD]
         match = next((m for m in allowed if m.lower() == name.lower()), None)
         if match is None:

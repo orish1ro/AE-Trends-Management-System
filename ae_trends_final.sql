@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS Customer (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS Platform (
     PlatformID     INTEGER PRIMARY KEY AUTOINCREMENT,
-    PlatformName   TEXT NOT NULL UNIQUE
+    PlatformName   TEXT NOT NULL UNIQUE,
+    IsHidden       INTEGER NOT NULL DEFAULT 0
 );
 
 -- ============================================================
@@ -25,8 +26,8 @@ CREATE TABLE IF NOT EXISTS Platform (
 CREATE TABLE IF NOT EXISTS Staff (
     StaffID        INTEGER PRIMARY KEY AUTOINCREMENT,
     Name           TEXT NOT NULL,
-    Role           TEXT NOT NULL DEFAULT 'Cashier'
-                   CHECK (Role IN ('Owner','Cashier','Inventory Staff')),
+    Role           TEXT NOT NULL DEFAULT 'Staff'
+                   CHECK (Role IN ('Owner','Staff','Cashier','Inventory Staff')),
     ContactNumber  TEXT,
     Username       TEXT NOT NULL UNIQUE,
     PasswordHash   TEXT NOT NULL
@@ -154,7 +155,8 @@ INSERT OR IGNORE INTO Platform (PlatformName) VALUES
 -- ============================================================
 CREATE TABLE IF NOT EXISTS Bank (
     BankID    INTEGER PRIMARY KEY AUTOINCREMENT,
-    BankName  TEXT NOT NULL UNIQUE COLLATE NOCASE
+    BankName  TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    IsHidden  INTEGER NOT NULL DEFAULT 0
 );
 
 INSERT OR IGNORE INTO Bank (BankName) VALUES
@@ -167,7 +169,14 @@ INSERT OR IGNORE INTO Bank (BankName) VALUES
 -- ============================================================
 CREATE TABLE IF NOT EXISTS Category (
     CategoryID    INTEGER PRIMARY KEY AUTOINCREMENT,
-    CategoryName  TEXT NOT NULL UNIQUE COLLATE NOCASE
+    CategoryName  TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    IsHidden      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS Brand (
+    BrandID    INTEGER PRIMARY KEY AUTOINCREMENT,
+    BrandName  TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    IsHidden   INTEGER NOT NULL DEFAULT 0
 );
 
 INSERT OR IGNORE INTO Category (CategoryName) VALUES

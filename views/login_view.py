@@ -106,7 +106,7 @@ class LoginView(QWidget):
         self.username_input = QLineEdit()
         self.username_input.setMaxLength(30)
         self.username_input.setPlaceholderText("e.g. sarah_trends")
-        self.username_input.setText("admin")
+        self.username_input.clear()
         self.username_input.setStyleSheet(self.input_style)
         l_layout.addLayout(field_group("Username", self.username_input))
 
@@ -115,7 +115,7 @@ class LoginView(QWidget):
         self.password_input = QLineEdit()
         self.password_input.setMaxLength(128)
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_input.setText("admin123")
+        self.password_input.clear()
         self.password_input.setStyleSheet(self.input_style)
 
         self.show_pass_btn = QPushButton("Show")
@@ -192,7 +192,29 @@ class LoginView(QWidget):
         self.reg_password_input.setPlaceholderText("Password")
         self.reg_password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.reg_password_input.setStyleSheet(self.input_style)
-        s_layout.addLayout(field_group("Password", self.reg_password_input))
+
+        # Password row with a Show/Hide button (same look as the sign-in card)
+        self.reg_show_pass_btn = QPushButton("Show")
+        self.reg_show_pass_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reg_show_pass_btn.setFixedHeight(38)
+        self.reg_show_pass_btn.setStyleSheet(
+            "background-color: #E8E2D5; color: #2A2421; font-weight: bold; "
+            "font-size: 11px; padding: 0 14px; border-radius: 6px; border: none;"
+        )
+        self.reg_show_pass_btn.clicked.connect(self.toggle_reg_password)
+
+        reg_pass_row = QHBoxLayout()
+        reg_pass_row.setSpacing(8)
+        reg_pass_row.addWidget(self.reg_password_input, stretch=1)
+        reg_pass_row.addWidget(self.reg_show_pass_btn)
+
+        reg_pass_group = QVBoxLayout()
+        reg_pass_group.setSpacing(6)
+        reg_pass_label = QLabel("Password")
+        reg_pass_label.setStyleSheet(FIELD_LABEL_STYLE)
+        reg_pass_group.addWidget(reg_pass_label)
+        reg_pass_group.addLayout(reg_pass_row)
+        s_layout.addLayout(reg_pass_group)
 
         self.btn_submit_signup = QPushButton("Create Account")
         self.btn_submit_signup.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -205,6 +227,10 @@ class LoginView(QWidget):
             "color: #666666; background: transparent; border: none; font-weight: bold; font-size: 12px;"
         )
         s_layout.addWidget(self.btn_back_to_login, alignment=Qt.AlignmentFlag.AlignCenter)
+        # Hide the password again whenever the user leaves or submits the sign-up form
+        self.btn_back_to_login.clicked.connect(self.hide_reg_password)
+        self.btn_submit_signup.clicked.connect(self.hide_reg_password)
+        self.btn_go_to_signup.clicked.connect(self.hide_reg_password)
 
         # Add cards to stack
         self.stacked_cards.addWidget(self.login_card)
@@ -213,6 +239,17 @@ class LoginView(QWidget):
         main_layout.addWidget(logo_label, alignment=Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(sub_title, alignment=Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.stacked_cards, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def toggle_reg_password(self):
+        if self.reg_password_input.echoMode() == QLineEdit.EchoMode.Password:
+            self.reg_password_input.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.reg_show_pass_btn.setText("Hide")
+        else:
+            self.hide_reg_password()
+
+    def hide_reg_password(self):
+        self.reg_password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.reg_show_pass_btn.setText("Show")
 
     def toggle_password(self):
         if self.password_input.echoMode() == QLineEdit.EchoMode.Password:

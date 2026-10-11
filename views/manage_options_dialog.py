@@ -1,14 +1,15 @@
-"""VIEW: one small dialog to add and remove entries of a list the owner manages
+"""VIEW: one small dialog to add, hide and show entries of a list the owner manages
 (selling platforms, banks, product categories).
 
-It knows nothing about the database. The caller hands in three callables:
+It knows nothing about the database. The caller hands in four callables:
 
-    loader()      -> [{"name": str, "used": int, "protected": bool}, ...]
+    loader()      -> [{"name": str, "used": int, "protected": bool, "hidden": bool}, ...]
     adder(name)   -> the saved spelling (raises ValidationError on bad input)
-    remover(name) -> the removed name   (raises ValidationError if still in use)
+    hider(name)   -> the hidden name    (raises ValidationError if built in)
+    shower(name)  -> the name shown again
 
-Entries that are still in use (or built in) show a disabled Remove button, so
-the owner can see at a glance what is safe to delete.
+Nothing is deleted: a hidden entry just leaves the dropdowns, past records keep
+it, and a Show button brings it back. Built-in entries have a disabled Hide button.
 """
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
                              QWidget)
 
 from utils.errors import report
+from views.styled_dropdown import StyledComboBox
 from utils.validators import ValidationError
 
 BG = "#F8F4EC"
@@ -46,29 +48,34 @@ DIALOG_STYLE = f"""
         border-radius: 6px; padding: 8px 22px; font-weight: 600;
     }}
     QPushButton#closeBtn:hover {{ background: #E9E2D2; }}
-    QPushButton#removeBtn {{
-        background: transparent; color: {DANGER}; border: 1px solid {DANGER};
+    QPushButton#hideBtn {{
+        background: transparent; color: #4A4238; border: 1px solid #C9C0AE;
         border-radius: 6px; padding: 5px 14px; font-weight: 600;
     }}
-    QPushButton#removeBtn:hover {{ background: {DANGER_BG}; }}
-    QPushButton#removeBtn:disabled {{
+    QPushButton#hideBtn:hover {{ background: #EFE9DB; }}
+    QPushButton#hideBtn:disabled {{
         color: #C9C2B6; border: 1px solid #E5E0D5; background: transparent;
     }}
+    QPushButton#showBtn {{
+        background: transparent; color: {GOLD_DARK}; border: 1px solid {GOLD};
+        border-radius: 6px; padding: 5px 14px; font-weight: 600;
+    }}
+    QPushButton#showBtn:hover {{ background: #F6EEDA; }}
     QScrollArea {{ border: none; background: transparent; }}
 """
 
 
 class ManageOptionsDialog(QDialog):
-    def __init__(self, parent, noun, unit, loader, adder, remover, plural=None):
+    def __init__(self, parent, noun, unit, loader, adder, hider, shower, plural=None):
         """noun: 'platform' / 'bank' / 'category'.  unit: what uses it
         ('orders', 'payments', 'products') - used for the "used by N ..." label."""
         super().__init__(parent)
         self.noun = noun
         self.plural = plural or noun + "s"
         self.unit = unit
-        self._loader, self._adder, self._remover = loader, adder, remover
+        self._loader, self._adder, self._hider, self._shower = loader, adder, hider, shower
         self.added = []      # names added while the dialog was open
-        self.removed = []    # names removed while the dialog was open
+        self.hidden = []     # names hidden while the dialog was open
 
         self.setWindowTitle(f"Manage {self.plural.title()}")
         self.setModal(True)
@@ -83,9 +90,9 @@ class ManageOptionsDialog(QDialog):
         title = QLabel(f"Manage {self.plural.title()}")
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         root.addWidget(title)
-        hint = QLabel(f"Add a new {noun}, or remove one your company no longer uses. "
-                      f"A {noun} that is still used by {unit} can't be removed, "
-                      "so your past records stay correct.")
+        hint = QLabel(f"Add a new {noun}, or hide one your company no longer uses. "
+                      f"A hidden {noun} leaves the dropdowns but stays in your past records "
+                      "and can be shown again anytime.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"font-size: 12px; color: {MUTED};")
         root.addWidget(hint)
@@ -103,6 +110,22 @@ class ManageOptionsDialog(QDialog):
         add_row.addWidget(self.add_input, 1)
         add_row.addWidget(add_btn)
         root.addLayout(add_row)
+
+        # search + filter: only change what the list shows, no database call
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
+        self.search_input = QLineEdit()
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setPlaceholderText(f"Search {self.plural}...")
+        self.search_input.textChanged.connect(self._render)
+        self.filter_box = StyledComboBox()
+        self.filter_box.addItems(["All", "Active", "Hidden"])
+        self.filter_box.setFixedSize(120, 34)
+        self.filter_box.currentTextChanged.connect(self._render)
+        filter_row.addWidget(self.search_input, 1)
+        filter_row.addWidget(self.filter_box)
+        root.addLayout(filter_row)
+        self._all_rows = []
 
         self.list_host = QWidget()
         self.list_lay = QVBoxLayout(self.list_host)
@@ -126,25 +149,43 @@ class ManageOptionsDialog(QDialog):
 
     # ------------------------------------------------------------- list
     def refresh(self):
-        while self.list_lay.count():
-            item = self.list_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        """Reload from the database, then redraw (keeps the search / filter as typed)."""
         try:
             rows = self._loader()
         except Exception as exc:  # noqa: BLE001 - never crash a dialog over a list
             report(exc, self, "Load Failed", context=f"manage {self.noun}")
             rows = []
+        self._all_rows = sorted(rows, key=lambda r: bool(r.get("hidden")))   # shown first
+        self._render()
+
+    def _render(self, *_args):
+        while self.list_lay.count():
+            item = self.list_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        text = self.search_input.text().strip().lower()
+        mode = self.filter_box.currentText()
+        rows = [r for r in self._all_rows
+                if (not text or text in r["name"].lower())
+                and (mode == "All"
+                     or (mode == "Hidden") == bool(r.get("hidden")))]
         for row in rows:
             self.list_lay.addWidget(self._build_row(row))
         if not rows:
-            empty = QLabel(f"No {self.plural} yet. Add one above.")
+            if not self._all_rows:
+                msg = f"No {self.plural} yet. Add one above."
+            elif text:
+                msg = f"No {self.plural} match \"{self.search_input.text().strip()}\"."
+            else:
+                msg = f"No {mode.lower()} {self.plural}."
+            empty = QLabel(msg)
             empty.setStyleSheet(f"color: {MUTED}; font-size: 12px; padding: 12px;")
             self.list_lay.addWidget(empty)
         self.list_lay.addStretch(1)
 
     def _build_row(self, row):
-        name, used, protected = row["name"], row.get("used", 0), row.get("protected", False)
+        name, used = row["name"], row.get("used", 0)
+        protected, hidden = row.get("protected", False), row.get("hidden", False)
         frame = QFrame()
         frame.setStyleSheet(f"QFrame {{ background: {CARD}; border: 1px solid {BORDER}; "
                             "border-radius: 8px; } QLabel { border: none; }")
@@ -154,27 +195,34 @@ class ManageOptionsDialog(QDialog):
         text = QVBoxLayout()
         text.setSpacing(2)
         name_lbl = QLabel(name)
-        name_lbl.setStyleSheet("font-size: 13px; font-weight: 600;")
+        name_lbl.setStyleSheet(f"font-size: 13px; font-weight: 600;"
+                               f"{' color: ' + MUTED + ';' if hidden else ''}")
+        unit = self.unit[:-1] if used == 1 and self.unit.endswith("s") else self.unit
         if protected:
-            status, tip = "Built in", f"'{name}' is built in and can't be removed."
+            status, tip = "Built in", f"'{name}' is built in and can't be hidden."
+        elif hidden:
+            status = "Hidden" + (f" - used by {used} {unit}" if used else "")
+            tip = f"Show this {self.noun} in the dropdowns again"
         elif used:
-            unit = self.unit[:-1] if used == 1 and self.unit.endswith("s") else self.unit
             status = f"In use by {used} {unit}"
-            tip = f"Still used by {used} {unit}, so it can't be removed."
+            tip = f"Hide this {self.noun} from the dropdowns (past records keep it)"
         else:
-            status, tip = f"Not used by any {self.unit}", f"Remove this {self.noun}"
+            status, tip = f"Not used by any {self.unit}", f"Hide this {self.noun} from the dropdowns"
         status_lbl = QLabel(status)
         status_lbl.setStyleSheet(f"font-size: 11px; color: {MUTED};")
         text.addWidget(name_lbl)
         text.addWidget(status_lbl)
         lay.addLayout(text, 1)
 
-        btn = QPushButton("Remove")
-        btn.setObjectName("removeBtn")
+        btn = QPushButton("Show" if hidden else "Hide")
+        btn.setObjectName("showBtn" if hidden else "hideBtn")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setEnabled(not protected and not used)
+        btn.setEnabled(not protected)
         btn.setToolTip(tip)
-        btn.clicked.connect(lambda _=False, n=name: self._remove(n))
+        if hidden:
+            btn.clicked.connect(lambda _=False, n=name: self._show(n))
+        else:
+            btn.clicked.connect(lambda _=False, n=name: self._hide(n))
         lay.addWidget(btn)
         return frame
 
@@ -196,24 +244,37 @@ class ManageOptionsDialog(QDialog):
         self.add_input.clear()
         self.refresh()
 
-    def _remove(self, name):
+    def _hide(self, name):
         answer = QMessageBox.question(
-            self, f"Remove {self.noun.title()}?",
-            f"Remove \"{name}\" from your {self.noun} list?\n\n"
-            f"It isn't used by any {self.unit}, so nothing in your records changes. "
-            "You can add it back later if you need it.",
+            self, f"Hide {self.noun.title()}?",
+            f"Hide \"{name}\"?\n\n"
+            f"It will no longer appear in the {self.noun} dropdowns. Your past records "
+            "keep it, and you can show it again anytime.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
-            gone = self._remover(name)
-        except ValidationError as exc:   # became in use meanwhile, or built in
-            QMessageBox.warning(self, "Can't Remove", str(exc))
+            gone = self._hider(name)
+        except ValidationError as exc:   # built in
+            QMessageBox.warning(self, "Can't Hide", str(exc))
             self.refresh()
             return
         except Exception as exc:  # noqa: BLE001
-            report(exc, self, "Remove Failed", context=f"remove {self.noun}")
+            report(exc, self, "Hide Failed", context=f"hide {self.noun}")
             return
-        self.removed.append(gone)
+        self.hidden.append(gone)
+        self.refresh()
+
+    def _show(self, name):
+        try:
+            back = self._shower(name)
+        except ValidationError as exc:
+            QMessageBox.warning(self, "Can't Show", str(exc))
+            self.refresh()
+            return
+        except Exception as exc:  # noqa: BLE001
+            report(exc, self, "Show Failed", context=f"show {self.noun}")
+            return
+        self.hidden = [h for h in self.hidden if h.lower() != back.lower()]
         self.refresh()

@@ -237,7 +237,7 @@ class PurchaseOrdersView(QWidget):
         search_icon.setStyleSheet(RESET)
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search PO number, supplier...")
+        self.search_input.setPlaceholderText("Search PO number, supplier or product...")
         self.search_input.setStyleSheet(
             "border: none; background: transparent; padding: 9px 0; "
             "font-size: 13px;"
@@ -266,10 +266,6 @@ class PurchaseOrdersView(QWidget):
         # The page always opens on Pending - those are the orders that need action.
         self.status_filter_pending.setChecked(True)
 
-        self.date_range_filter = SupplierComboBox()
-        self.date_range_filter.addItems(["Date Range", "All Time"])
-        self.date_range_filter.setMinimumWidth(150)
-
         self.new_po_btn = QPushButton("New Purchase Order")
         self.new_po_btn.setIcon(svg_icon("plus", "#FFFFFF", 17))
         self.new_po_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -286,7 +282,6 @@ class PurchaseOrdersView(QWidget):
         row.addWidget(self.status_filter_pending)
         row.addWidget(self.status_filter_received)
         row.addWidget(self.status_filter_cancelled)
-        row.addWidget(self.date_range_filter)
         row.addWidget(self.manage_suppliers_btn)
         row.addWidget(self.new_po_btn)
         return row
@@ -788,11 +783,12 @@ class PurchaseOrdersView(QWidget):
         self.date_input.setMinimumDate(QDate.currentDate())
         self._set_side_panel_open(True)
 
-    def set_available_products(self, products):
+    def set_available_products(self, products, brands=None):
         """Called by the controller with the current inventory product
         list, so the order-item rows can offer a real product picker
         instead of a hard-coded list."""
         self.available_products = products or []
+        self.available_brands = list(brands or [])
         self._product_price_map = {
             p["name"]: p.get("price", 0.0) for p in self.available_products
         }
@@ -835,9 +831,13 @@ class PurchaseOrdersView(QWidget):
         self.empty_state_widget.setVisible(False)
 
         row_widget = QWidget()
-        row_layout = QHBoxLayout(row_widget)
+        outer_layout = QVBoxLayout(row_widget)       # line 1: product / qty / cost ...
+        outer_layout.setContentsMargins(0, 0, 0, 0)  # line 2: optional brand + clothing size
+        outer_layout.setSpacing(4)
+        row_layout = QHBoxLayout()
         row_layout.setContentsMargins(0, 0, 0, 0)
         row_layout.setSpacing(ITEM_COL_SPACING)
+        outer_layout.addLayout(row_layout)
 
         prod_combo = StyledComboBox()
         prod_combo.setEditable(True)
@@ -928,10 +928,37 @@ class PurchaseOrdersView(QWidget):
         row_layout.addWidget(line_total_lbl)
         row_layout.addWidget(del_btn)
 
+        # -- second line: Brand (optional) and Size (clothing only) ---------
+        brand_combo = StyledComboBox()
+        brand_combo.setEditable(True)
+        brand_combo.addItems(getattr(self, "available_brands", []))
+        brand_combo.setCurrentIndex(-1)
+        brand_combo.lineEdit().setPlaceholderText("Brand (optional)")
+        brand_combo.setFixedHeight(ITEM_ROW_H)
+        brand_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        cloth_combo = StyledComboBox(compact=True)
+        cloth_combo.addItems(["Clothing size", "S", "M", "L", "XL"])
+        cloth_combo.setFixedSize(130, ITEM_ROW_H)
+        cloth_combo.setToolTip("Only for clothing: S, M, L or XL")
+        meta_row = QHBoxLayout()
+        meta_row.setContentsMargins(0, 0, 0, 0)
+        meta_row.setSpacing(ITEM_COL_SPACING)
+        meta_row.addWidget(brand_combo, 1)
+        meta_row.addWidget(cloth_combo)
+        meta_row.addSpacing(ITEM_COL_DEL_W)
+        outer_layout.addLayout(meta_row)
+        # product picked from the list: bring its brand / size along; a product that is
+        # not clothing can't take a clothing size
+        prod_combo.activated.connect(
+            lambda _=0, c=prod_combo, b=brand_combo, s=cloth_combo: self._fill_meta(c, b, s))
+        prod_combo.currentTextChanged.connect(
+            lambda _t="", c=prod_combo, s=cloth_combo: self._sync_size_enabled(c, s))
+
         row_data = {
             "widget": row_widget, "combo": prod_combo,
             "qty": qty_input, "size": size_input, "unit": unit_combo,
             "cost": cost_input, "line_lbl": line_total_lbl,
+            "brand": brand_combo, "clothing": cloth_combo,
         }
 
         qty_input.textChanged.connect(self._recalculate_totals)
@@ -946,6 +973,30 @@ class PurchaseOrdersView(QWidget):
         )
         self.item_rows.append(row_data)
         self._update_items_count_label()
+
+    def _product_named(self, name):
+        name = (name or "").strip().lower()
+        return next((p for p in self.available_products
+                     if (p.get("name") or "").strip().lower() == name), None)
+
+    def _fill_meta(self, combo, brand_combo, size_combo):
+        product = self._product_named(combo.currentText())
+        if not product:
+            return
+        if product.get("brand"):
+            brand_combo.setCurrentText(product["brand"])
+        index = size_combo.findText(product.get("size") or "", Qt.MatchFlag.MatchFixedString)
+        size_combo.setCurrentIndex(index if index > 0 else 0)
+        self._sync_size_enabled(combo, size_combo)
+
+    def _sync_size_enabled(self, combo, size_combo):
+        """A product that exists and is not clothing has no clothing size."""
+        product = self._product_named(combo.currentText())
+        is_other = bool(product and (product.get("category") or "").strip()
+                        and not (product["category"].strip().lower().startswith("clothing")))
+        size_combo.setEnabled(not is_other)
+        if is_other:
+            size_combo.setCurrentIndex(0)
 
     def _autofill_cost(self, combo, cost_field):
         name = combo.currentText().strip()
@@ -980,6 +1031,12 @@ class PurchaseOrdersView(QWidget):
             self.add_item_row()
             row = self.item_rows[-1]
             row["combo"].setEditText(item["name"])
+            if item.get("brand"):
+                row["brand"].setCurrentText(item["brand"])
+            cloth_index = row["clothing"].findText(item.get("clothing_size") or "",
+                                                   Qt.MatchFlag.MatchFixedString)
+            if cloth_index > 0:
+                row["clothing"].setCurrentIndex(cloth_index)
             row["qty"].setText(str(item["quantity"]))
             if item.get("size"):
                 row["size"].setText(f"{item['size']:g}")
@@ -1154,6 +1211,9 @@ class PurchaseOrdersView(QWidget):
                     "product": prod_name, "quantity": qty,
                     "size": size, "unit": row["unit"].currentText(),
                     "unit_cost": cost, "line_total": qty * cost,
+                    "brand": row["brand"].currentText().strip(),
+                    "clothing_size": (row["clothing"].currentText()
+                                      if row["clothing"].currentIndex() > 0 else ""),
                 })
 
             if not items_to_order:
@@ -1205,8 +1265,10 @@ class PurchaseOrdersView(QWidget):
             if status != "All Status" and po["status"] != status:
                 return False
             if search_text:
-                haystack = f"{po['po_number']} {po['supplier']}".lower()
-                if search_text not in haystack:
+                haystack = (f"{po['po_number']} {po['supplier']} "
+                            f"{po.get('products', '')}").lower()
+                # every word typed must appear somewhere (PO number, supplier or a product)
+                if any(word not in haystack for word in search_text.split()):
                     return False
             return True
 
@@ -1468,8 +1530,10 @@ class PurchaseOrdersView(QWidget):
         for row, item in enumerate(details["items"]):
             size = item.get("size")
             size_text = f"{size:g} {item.get('measure') or ''}".strip() if size else "—"
+            size_text = item.get("clothing_size") or size_text
+            item_label = item["name"] + (f"  ({item['brand']})" if item.get("brand") else "")
             values = [
-                item["name"], str(item["quantity"]), size_text,
+                item_label, str(item["quantity"]), size_text,
                 f"₱{item['unit_cost']:,.2f}", f"₱{item['line_total']:,.2f}",
             ]
             for column, value in enumerate(values):

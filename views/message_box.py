@@ -137,7 +137,7 @@ class ModernMessageBox(QDialog):
         card.setFixedWidth(430)
         card.setStyleSheet(
             f"QFrame#msgCard {{ background: #FFFFFF; border: 1px solid {CARD_BORDER}; "
-            "border-radius: 16px; }}"
+            "border-radius: 16px; }"
         )
         shadow = QGraphicsDropShadowEffect(card)
         shadow.setBlurRadius(44)
@@ -198,7 +198,7 @@ class ModernMessageBox(QDialog):
             if flag == primary_flag:
                 btn.setStyleSheet(
                     f"QPushButton {{ background: {primary_bg}; color: #FFFFFF; border: none; "
-                    "border-radius: 9px; padding: 0px 22px; font-size: 13px; font-weight: 700; }}"
+                    "border-radius: 9px; padding: 0px 22px; font-size: 13px; font-weight: 700; }"
                     f"QPushButton:hover {{ background: {primary_hover}; }}"
                 )
             else:

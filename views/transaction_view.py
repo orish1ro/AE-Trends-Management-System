@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QFra
 
 from views.styled_dropdown import StyledComboBox
 from views.ui_icons import svg_icon
-from utils.validators import ONLINE_BANKS
+from utils.validators import ONLINE_BANKS, CLOTHING_SIZES, FOR_GROUPS, is_clothing
 
 # --------------------------------------------------------------------------- #
 # Theme (same gold / cream palette as the rest of the app)
@@ -600,6 +600,9 @@ class ProductCard(QFrame):
         name.setMaximumHeight(36)
         name.setToolTip(product.get("name", ""))
         sku = label(f"SKU: {product.get('sku') or '-'}", 10, 500, MUTED)
+        tag_text = " \u00b7 ".join(x for x in (product.get("brand"), product.get("size"),
+                                               product.get("for_group")) if x)
+        meta = label(tag_text, 10, 600, SOFT_TEXT) if tag_text else None
 
         stock_row = QHBoxLayout()
         stock_row.setSpacing(6)
@@ -614,6 +617,8 @@ class ProductCard(QFrame):
 
         info.addWidget(name)
         info.addWidget(sku)
+        if meta is not None:
+            info.addWidget(meta)
         info.addLayout(stock_row)
         info.addStretch()
         top.addLayout(info, 1)
@@ -788,6 +793,7 @@ class TransactionView(QWidget):
         self._cards = []
         self._cart_rows = {}
         self._category = None
+        self._clothing_mode = False     # True while the Clothing filter is on
         self._catalog_page = 1
         self._columns = 3
         self._rows = ROWS_PER_PAGE
@@ -952,6 +958,17 @@ class TransactionView(QWidget):
             self.catalog_filter_buttons[name] = chip
             chips.addWidget(chip)
         chips.addStretch()
+        # Only shown while the Clothing filter is on: narrow by size and by who it is for
+        self.size_filter = StyledComboBox(compact=True)
+        self.size_filter.addItems(["All Sizes"] + list(CLOTHING_SIZES))
+        self.size_filter.setFixedSize(112, 30)
+        self.for_filter = StyledComboBox(compact=True)
+        self.for_filter.addItems(["Men, Women, Kids"] + list(FOR_GROUPS))
+        self.for_filter.setFixedSize(150, 30)
+        self.size_filter.hide()
+        self.for_filter.hide()
+        chips.addWidget(self.size_filter)
+        chips.addWidget(self.for_filter)
         lay.addLayout(chips)
 
         self.catalog_scroll = NotifyScrollArea()
@@ -1319,6 +1336,8 @@ class TransactionView(QWidget):
         self.search_input.textChanged.connect(lambda _text: self._search_timer.start())
         self.search_input.returnPressed.connect(self._on_search_submit)
         self.category_combo.currentIndexChanged.connect(self._on_category_combo)
+        self.size_filter.currentIndexChanged.connect(lambda _=0: self._apply_catalog_filters(reset_page=True))
+        self.for_filter.currentIndexChanged.connect(lambda _=0: self._apply_catalog_filters(reset_page=True))
         for name, chip in self.catalog_filter_buttons.items():
             chip.clicked.connect(lambda _checked=False, value=name: self._on_chip(value))
         self.catalog_scroll.resized.connect(self._relayout_if_needed)
@@ -1665,6 +1684,19 @@ class TransactionView(QWidget):
         self.category_combo.blockSignals(True)
         self.category_combo.setCurrentIndex(index)
         self.category_combo.blockSignals(False)
+        self._sync_clothing_filters()
+
+    def _sync_clothing_filters(self):
+        """Size and For filters appear only when Clothing is picked (chip or dropdown)."""
+        self._clothing_mode = bool(self._category and self._category != OTHERS_KEY
+                                   and is_clothing(self._category))
+        self.size_filter.setVisible(self._clothing_mode)
+        self.for_filter.setVisible(self._clothing_mode)
+        if not self._clothing_mode:
+            for box in (self.size_filter, self.for_filter):
+                box.blockSignals(True)
+                box.setCurrentIndex(0)
+                box.blockSignals(False)
 
     def _on_chip(self, name):
         self._category = None if name == "All" else (OTHERS_KEY if name == "Others" else name)
@@ -1682,7 +1714,15 @@ class TransactionView(QWidget):
         for product in self._catalog_products:
             if not matches_category(product.get("category"), self._category):
                 continue
-            haystack = f"{product.get('name', '')} {product.get('sku', '')} {product.get('category', '')}".lower()
+            if self._clothing_mode:
+                if (self.size_filter.currentIndex() > 0
+                        and (product.get("size") or "") != self.size_filter.currentText()):
+                    continue
+                if (self.for_filter.currentIndex() > 0
+                        and (product.get("for_group") or "") != self.for_filter.currentText()):
+                    continue
+            haystack = (f"{product.get('name', '')} {product.get('sku', '')} {product.get('category', '')} "
+                        f"{product.get('brand', '')}").lower()
             if all(term in haystack for term in terms):
                 result.append(product)
         return result

@@ -20,11 +20,24 @@ def nice_date(iso_text):
     return iso_text or ""
 
 
+from models.options_model import OptionsModel
+from utils.validators import CLOTHING_SIZES, clean_clothing_attrs, is_clothing
+
+
 class POModel:
     def __init__(self, db_manager, staff_id=1):
         self.db = db_manager
         self.staff_id = staff_id
         self._ensure_pending_column()
+        self._ensure_supplier_archive_column()
+
+    def _ensure_supplier_archive_column(self):
+        """Suppliers are archived (hidden), never deleted. Safe to run every time."""
+        with self.db.get_connection() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(Supplier)")}
+            if cols and "IsArchived" not in cols:
+                conn.execute("ALTER TABLE Supplier ADD COLUMN IsArchived INTEGER NOT NULL DEFAULT 0")
+                conn.commit()
 
     def _ensure_pending_column(self):
         """A brand-new product that first appears on a Purchase Order is flagged
@@ -35,7 +48,15 @@ class POModel:
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(Product)")}
             if cols and "IsPendingReceipt" not in cols:
                 conn.execute("ALTER TABLE Product ADD COLUMN IsPendingReceipt INTEGER NOT NULL DEFAULT 0")
-                conn.commit()
+            # Brand (any product) and clothing size / audience (Clothing only)
+            for col in ("Brand", "ClothingSize", "ForGroup"):
+                if cols and col not in cols:
+                    conn.execute(f"ALTER TABLE Product ADD COLUMN {col} TEXT")
+            pod_cols = {r["name"] for r in conn.execute("PRAGMA table_info(PurchaseOrderDetails)")}
+            for col in ("Brand", "ClothingSize"):
+                if pod_cols and col not in pod_cols:
+                    conn.execute(f"ALTER TABLE PurchaseOrderDetails ADD COLUMN {col} TEXT")
+            conn.commit()
 
     def get_all_po(self):
         query = """
@@ -47,6 +68,14 @@ class POModel:
         """
         with self.db.get_connection() as conn:
             rows = conn.execute(query).fetchall()
+            # Product names on every PO, so the Purchase Orders search can find a PO
+            # by what was ordered (not only by PO number or supplier).
+            names = {}
+            for d in conn.execute("""SELECT pod.PurchaseOrderID AS po_id, p.ProductName AS name
+                                     FROM PurchaseOrderDetails pod
+                                     JOIN Product p ON p.ProductID = pod.ProductID
+                                     ORDER BY pod.PODetailsID"""):
+                names.setdefault(d["po_id"], []).append(d["name"] or "")
         return [
             {
                 "id": r["PurchaseOrderID"],
@@ -55,6 +84,7 @@ class POModel:
                 "date_ordered": nice_date(r["OrderDate"]),
                 "total_cost": r["TotalCost"],
                 "status": r["Status"],
+                "products": ", ".join(names.get(r["PurchaseOrderID"], [])),
             }
             for r in rows
         ]
@@ -71,7 +101,10 @@ class POModel:
                    s.SupplierName, p.ProductName, pod.Quantity, pod.UnitCost,
                    COALESCE(p.IsArchived, 0) AS IsArchived,
                    COALESCE(p.IsPendingReceipt, 0) AS IsPendingReceipt,
-                   p.StockQuantity AS StockOnHand
+                   p.StockQuantity AS StockOnHand,
+                   COALESCE(NULLIF(pod.Brand, ''), p.Brand) AS Brand,
+                   COALESCE(NULLIF(pod.ClothingSize, ''), p.ClothingSize) AS ClothingSize,
+                   p.ForGroup AS ForGroup, p.Category AS Category
             FROM PurchaseOrderDetails pod
             JOIN PurchaseOrder po ON po.PurchaseOrderID = pod.PurchaseOrderID
             JOIN Supplier s ON s.SupplierID = po.SupplierID
@@ -99,6 +132,11 @@ class POModel:
                 # what has been received so far for a not-yet-added product,
                 # so the Add Product form can start from the right stock number
                 "stock_on_hand": r["StockOnHand"] or 0,
+                # carried into the Add Product form so the PO's brand / size reach Inventory
+                "brand": r["Brand"] or "",
+                "clothing_size": r["ClothingSize"] or "",
+                "for_group": r["ForGroup"] or "",
+                "category": r["Category"] or "",
             }
             for r in rows
         ]
@@ -122,7 +160,9 @@ class POModel:
                 return None
             rows = conn.execute(
                 """SELECT p.ProductName, pod.Quantity, pod.UnitCost,
-                          pod.UnitSize, pod.UnitMeasure
+                          pod.UnitSize, pod.UnitMeasure,
+                          COALESCE(NULLIF(pod.Brand, ''), p.Brand) AS Brand,
+                          COALESCE(NULLIF(pod.ClothingSize, ''), p.ClothingSize) AS ClothingSize
                    FROM PurchaseOrderDetails pod
                    JOIN Product p ON p.ProductID = pod.ProductID
                    WHERE pod.PurchaseOrderID = ?
@@ -139,6 +179,8 @@ class POModel:
             "items": [
                 {
                     "name": row["ProductName"],
+                    "brand": row["Brand"] or "",
+                    "clothing_size": row["ClothingSize"] or "",
                     "quantity": row["Quantity"],
                     "size": row["UnitSize"],
                     "measure": row["UnitMeasure"],
@@ -168,7 +210,7 @@ class POModel:
         with self.db.get_connection() as conn:
             rows = conn.execute(
                 "SELECT SupplierID, SupplierName, Location, ContactNumber "
-                "FROM Supplier ORDER BY SupplierName"
+                "FROM Supplier WHERE COALESCE(IsArchived, 0) = 0 ORDER BY SupplierName"
             ).fetchall()
         return [
             {
@@ -199,7 +241,8 @@ class POModel:
             ).fetchone()
             if existing:
                 conn.execute(
-                    "UPDATE Supplier SET Location = ?, ContactNumber = ? WHERE SupplierID = ?",
+                    "UPDATE Supplier SET Location = ?, ContactNumber = ?, IsArchived = 0 "
+                    "WHERE SupplierID = ?",
                     (location, contact, existing["SupplierID"]),
                 )
                 conn.commit()
@@ -229,43 +272,45 @@ class POModel:
             )
             conn.commit()
 
-    def delete_supplier(self, supplier_id):
-        """Returns (True, None) on success, or (False, reason) if the
-        supplier is still referenced by purchase orders or products and
-        can't be safely removed."""
+    def archive_supplier(self, supplier_id):
+        """Hides a supplier from the supplier list and dropdowns. Nothing is deleted,
+        so old purchase orders and products keep their supplier.
+        Returns (True, None) on success, or (False, reason)."""
         with self.db.get_connection() as conn:
             if not conn.execute("SELECT 1 FROM Supplier WHERE SupplierID = ?",
                                 (supplier_id,)).fetchone():
                 return False, "This supplier no longer exists. Refresh and try again."
-            po_count = conn.execute(
-                "SELECT COUNT(*) c FROM PurchaseOrder WHERE SupplierID = ?", (supplier_id,)
-            ).fetchone()["c"]
-            prod_count = conn.execute(
-                "SELECT COUNT(*) c FROM Product WHERE SupplierID = ?", (supplier_id,)
-            ).fetchone()["c"]
-            if po_count > 0 or prod_count > 0:
-                return False, (
-                    f"This supplier is linked to {po_count} purchase order(s) and "
-                    f"{prod_count} product(s), so it can't be deleted."
-                )
-            conn.execute("DELETE FROM Supplier WHERE SupplierID = ?", (supplier_id,))
+            conn.execute("UPDATE Supplier SET IsArchived = 1 WHERE SupplierID = ?",
+                         (supplier_id,))
             conn.commit()
             return True, None
 
-    def _get_or_create_product(self, conn, product_name, unit_cost):
+    def _get_or_create_product(self, conn, product_name, unit_cost, brand="", size=""):
+        """Finds the product by name (or makes a hidden pending one). Returns
+        (product_id, clothing_size_to_store). A product that already exists keeps its
+        own size: ordering another size under the same name is refused, because
+        every size is its own product (e.g. 'Blue Tee - M', 'Blue Tee - L')."""
         row = conn.execute(
-            "SELECT ProductID FROM Product WHERE ProductName = ?", (product_name,)
+            "SELECT ProductID, Category, ClothingSize FROM Product WHERE ProductName = ?",
+            (product_name,)
         ).fetchone()
         if row:
-            return row["ProductID"]
+            have = (row["ClothingSize"] or "").strip()
+            if size and have and have.lower() != size.lower():
+                raise ValidationError(
+                    f"'{product_name}' is size {have} in Inventory. For size {size}, use a "
+                    f"different product name, e.g. '{product_name} - {size}'.")
+            if size and row["Category"] and not is_clothing(row["Category"]):
+                size = ""                       # size only applies to clothing
+            return row["ProductID"], size
         supplier_id = self._get_or_create_supplier(conn, "General Supplier")
         cur = conn.execute(
             """INSERT INTO Product (SupplierID, StaffID, ProductName, Price, StockQuantity,
-                                    IsPendingReceipt)
-               VALUES (?, ?, ?, ?, 0, 1)""",
-            (supplier_id, self.staff_id, product_name, unit_cost),
+                                    IsPendingReceipt, Brand, ClothingSize)
+               VALUES (?, ?, ?, ?, 0, 1, ?, ?)""",
+            (supplier_id, self.staff_id, product_name, unit_cost, brand or None, size or None),
         )
-        return cur.lastrowid
+        return cur.lastrowid, size
 
     def _clean_po_items(self, items):
         """Validates every line, merges repeated products, and returns
@@ -283,16 +328,27 @@ class POModel:
             else:
                 size = None
             unit = clean_text(raw.get("unit"), "Unit", required=False, max_len=20) or None
+            brand = clean_text(raw.get("brand"), "Brand", required=False, max_len=50)
+            clothing_size = clean_clothing_attrs("Clothing", raw.get("clothing_size"), "")[0]
             key = name.lower()
             if key in merged:
                 if merged[key]["unit_cost"] != cost:
                     raise ValidationError(
                         f"'{name}' is listed twice with different unit costs. "
                         "Use one row per product.")
-                merged[key]["quantity"] += qty
+                other = merged[key]
+                if ((clothing_size and other["clothing_size"] and clothing_size != other["clothing_size"])
+                        or (brand and other["brand"] and brand.lower() != other["brand"].lower())):
+                    raise ValidationError(
+                        f"'{name}' is listed twice with a different size or brand. Use one row per "
+                        f"product; for another size give it its own name, e.g. '{name} - L'.")
+                other["quantity"] += qty
+                other["brand"] = other["brand"] or brand
+                other["clothing_size"] = other["clothing_size"] or clothing_size
             else:
                 merged[key] = {"product": name, "quantity": qty, "unit_cost": cost,
-                               "size": size, "unit": unit}
+                               "size": size, "unit": unit, "brand": brand,
+                               "clothing_size": clothing_size}
         if not merged:
             raise ValidationError("Please add at least one product to the order.")
         return list(merged.values())
@@ -322,17 +378,27 @@ class POModel:
             )
             po_id = cur.lastrowid
             for item in items:
-                product_id = self._get_or_create_product(conn, item["product"], item["unit_cost"])
+                product_id, clothing_size = self._get_or_create_product(
+                    conn, item["product"], item["unit_cost"], item["brand"], item["clothing_size"])
                 conn.execute(
                     """INSERT INTO PurchaseOrderDetails (PurchaseOrderID, ProductID,
                                                           Quantity, UnitCost,
-                                                          UnitSize, UnitMeasure)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
+                                                          UnitSize, UnitMeasure,
+                                                          Brand, ClothingSize)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (po_id, product_id, item["quantity"], item["unit_cost"],
-                     item["size"], item["unit"]),
+                     item["size"], item["unit"], item["brand"] or None, clothing_size or None),
                 )
             conn.commit()
-            return po_number(po_id)
+        # a brand typed on the PO joins the saved brand list (shown again if it was hidden)
+        options = OptionsModel(self.db)
+        for item in items:
+            if item["brand"]:
+                try:
+                    options.add_brand(item["brand"])
+                except ValidationError:
+                    pass
+        return po_number(po_id)
 
     def cancel_po(self, po_code):
         """Marks a Pending PO as Cancelled. Stock is only ever added when a PO
@@ -382,6 +448,8 @@ class POModel:
             #    product's stock level right before we touch it.
             items = conn.execute(
                 """SELECT pod.ProductID, pod.Quantity, p.ProductName, p.StockQuantity,
+                          pod.Brand AS PoBrand, pod.ClothingSize AS PoSize,
+                          p.ClothingSize AS OwnSize,
                           COALESCE(p.IsPendingReceipt, 0) AS IsNew
                    FROM PurchaseOrderDetails pod
                    JOIN Product p ON p.ProductID = pod.ProductID
@@ -406,6 +474,14 @@ class POModel:
                         "UPDATE Product SET SupplierID = ? WHERE ProductID = ?",
                         (po_row["SupplierID"], item["ProductID"])
                     )
+                # The brand on the PO line shows up in Inventory (and a size if the
+                # product has none yet).
+                if (item["PoBrand"] or "").strip():
+                    conn.execute("UPDATE Product SET Brand = ? WHERE ProductID = ?",
+                                 (item["PoBrand"].strip(), item["ProductID"]))
+                if (item["PoSize"] or "").strip() and not (item["OwnSize"] or "").strip():
+                    conn.execute("UPDATE Product SET ClothingSize = ? WHERE ProductID = ?",
+                                 (item["PoSize"].strip(), item["ProductID"]))
                 # A brand-new product stays hidden even now: staff still has to add
                 # it via Add New Product ("is_new" lets the UI say so).
                 restocked.append({

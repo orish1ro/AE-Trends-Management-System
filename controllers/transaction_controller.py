@@ -43,16 +43,17 @@ class TransactionController:
 
     @safe_slot("Manage Options Error", parent_attr="record_view")
     def open_manage_options(self, kind):
-        """Add / remove platforms or banks. Only unused ones can be removed."""
+        """Add / hide / show platforms or banks. Hiding never deletes past records."""
         unit = {"platform": "orders", "bank": "payments"}[kind]
         dialog = ManageOptionsDialog(
             self.record_view, kind, unit,
             loader=lambda: self.options_model.entries(kind),
             adder=lambda name: self.options_model.add(kind, name),
-            remover=lambda name: self.options_model.remove(kind, name))
+            hider=lambda name: self.options_model.hide(kind, name),
+            shower=lambda name: self.options_model.show(kind, name))
         dialog.exec()
         self.load_options()
-        self.record_view.forget_removed_options(kind, dialog.removed)
+        self.record_view.forget_removed_options(kind, dialog.hidden)
 
     def _confirm_new_option(self, kind, name):
         """Returns the name to save, or None if the user backs out.
@@ -82,7 +83,7 @@ class TransactionController:
 
     @safe_slot("Catalog Error", parent_attr="record_view")
     def load_catalog(self):
-        products = self.inv_model.get_all_products()
+        products = self.inv_model.get_all_products(hide_out_of_stock=True)
         self.record_view.populate_catalog(products)
 
     def handle_add_to_cart(self, product):

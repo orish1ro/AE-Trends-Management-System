@@ -67,8 +67,8 @@ class HistoryModel:
         # Bank tables, so a platform or bank added from New Transaction (e.g.
         # "RAGAPEE") appears in these filters automatically.
         options = OptionsModel(self.db)
-        platforms = options.get_platforms(include_walk_in=True)
-        payment_methods = options.get_payment_methods()
+        platforms = options.get_platforms(include_walk_in=True, include_hidden=True)   # hidden ones still have past orders
+        payment_methods = options.get_payment_methods(include_hidden=True)
         with self.db.get_connection() as conn:
             # Old orders may carry a method that is no longer in the lists.
             for (method,) in conn.execute(
@@ -371,3 +371,32 @@ class HistoryModel:
             "sales_revenue": sales_revenue,
             "purchase_cost": purchase_cost,
         }
+
+
+# ---------------------------------------------------------------------------
+# Sorting for the Transaction History table
+# ---------------------------------------------------------------------------
+SORT_OPTIONS = ("Newest First", "Oldest First", "Total: High to Low",
+                "Total: Low to High", "Name: A to Z", "Name: Z to A")
+
+
+def sort_rows(rows, mode="Newest First"):
+    """Orders history rows (orders and/or purchases). Ties fall back to the date,
+    then the id, so the order is always stable."""
+    def when(r):
+        return (r.get("raw_date") or "", r.get("id") or 0)
+
+    def name(r):
+        return (r.get("customer") or r.get("supplier") or "").strip().lower()
+
+    if mode == "Oldest First":
+        return sorted(rows, key=when)
+    if mode == "Total: High to Low":
+        return sorted(rows, key=lambda r: (r.get("total") or 0, when(r)), reverse=True)
+    if mode == "Total: Low to High":
+        return sorted(rows, key=lambda r: (r.get("total") or 0, when(r)))
+    if mode == "Name: A to Z":
+        return sorted(rows, key=lambda r: (name(r), when(r)))
+    if mode == "Name: Z to A":
+        return sorted(rows, key=lambda r: (name(r), when(r)), reverse=True)
+    return sorted(rows, key=when, reverse=True)       # Newest First (default)

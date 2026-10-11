@@ -28,7 +28,9 @@ LEGACY_PAYMENT_METHOD = "Online Banking"
 DEFAULT_PLATFORMS = ("Walk-in", "Shopee", "TikTok Shop", "Lazada", "Facebook Live")
 DEFAULT_CATEGORIES = ("Clothing • Tops", "Clothing • Bottoms", "Clothing • Outerwear",
                       "Skincare • Face", "Skincare • Treatment")   # starter list; owner can add/remove
-ROLES = ("Owner", "Cashier", "Inventory Staff")
+CLOTHING_SIZES = ("S", "M", "L", "XL")
+FOR_GROUPS = ("Men", "Women", "Kids")
+ROLES = ("Owner", "Staff", "Cashier", "Inventory Staff")
 
 # Allowed order-status moves. Anything not listed is rejected.
 ORDER_TRANSITIONS = {
@@ -164,6 +166,46 @@ def check_choice(value, label, allowed):
     if value not in allowed:
         raise ValidationError(f"{label} must be one of: {', '.join(allowed)}.")
     return value
+
+
+_CATEGORY_SEP_RE = re.compile(r"\s*(?:[\u2022\u00b7\u203a>/|\u2013\u2014]|\s-\s)\s*")
+
+
+def normalize_category(name):
+    """Lets people type a category on any keyboard: 'Accessories > Bags',
+    'Accessories / Bags', 'Accessories | Bags' or 'Accessories - Bags' all become
+    'Accessories \u2022 Bags'. A plain hyphen inside a word ('T-Shirts') is left alone."""
+    text = " ".join(str(name or "").split())
+    if not text:
+        return ""
+    parts = _CATEGORY_SEP_RE.split(text, maxsplit=1)
+    if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+        return f"{parts[0].strip()} \u2022 {parts[1].strip()}"
+    return text
+
+
+def is_clothing(category):
+    """True for 'Clothing', 'Clothing \u2022 Tops', ..."""
+    return (category or "").strip().lower().startswith("clothing")
+
+
+def clean_clothing_attrs(category, size, for_group):
+    """Size (S/M/L/XL) and For (Men/Women/Kids) only apply to Clothing.
+    Returns the cleaned (size, for_group); both are blank for any other category."""
+    size = ("" if size is None else str(size)).strip()
+    for_group = ("" if for_group is None else str(for_group)).strip()
+    if not is_clothing(category):
+        return "", ""
+
+    def pick(value, allowed, label):
+        if not value:
+            return ""
+        match = next((a for a in allowed if a.lower() == value.lower()), None)
+        if match is None:
+            raise ValidationError(f"{label} must be one of: {', '.join(allowed)}.")
+        return match
+
+    return pick(size, CLOTHING_SIZES, "Size"), pick(for_group, FOR_GROUPS, "For")
 
 
 def check_order_transition(old, new):

@@ -527,7 +527,12 @@ class POTests(Base):
             self.po.update_supplier(sid, "acme", "", "")                     # name clash
         with self.assertRaises(ValidationError):
             self.po.update_supplier(9999, "Q", "", "")
-        self.assertFalse(self.po.delete_supplier(9999)[0])
+        self.assertFalse(self.po.archive_supplier(9999)[0])
+        # archiving hides a supplier but keeps the row; re-adding the name restores it
+        self.assertTrue(self.po.archive_supplier(sid)[0])
+        self.assertNotIn("Beta", [x["name"] for x in self.po.get_all_suppliers()])
+        self.po.add_supplier("Beta", contact="09171234567")
+        self.assertIn("Beta", [x["name"] for x in self.po.get_all_suppliers()])
 
 
 class ExpenseAndDbTests(Base):

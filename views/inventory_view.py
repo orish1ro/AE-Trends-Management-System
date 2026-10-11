@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF, QEvent
 import base64
 
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
-from views.styled_dropdown import StyledComboBox
+from views.styled_dropdown import StyledComboBox, CategoryFilterCombo
 from views.ui_icons import set_svg_icon, svg_icon
 
 from views.table_align import align_item, align_headers, TEXT, NUMBER, DATE, CENTER
@@ -155,9 +155,10 @@ class ProductCard(QFrame):
         display_name = raw_name.title() if raw_name.isupper() else raw_name
         name = ElidedLabel(display_name)
         name.setStyleSheet(f"font-size: 13px; font-weight: bold; color: #20283A; {RESET}")
-        category = ElidedLabel(str(product["category"]))
+        card_tag = " \u00b7 ".join(x for x in (product.get("size"), product.get("for_group")) if x)
+        category = ElidedLabel(str(product["category"]) + (f"  \u00b7  {card_tag}" if card_tag else ""))
         category.setStyleSheet(f"font-size: 11px; color: #667085; {RESET}")
-        sku = ElidedLabel(str(product["sku"]))
+        sku = ElidedLabel(str(product["sku"]) + (f"  \u00b7  {product['brand']}" if product.get("brand") else ""))
         sku.setStyleSheet(f"font-size: 10px; color: #9AA3B2; {RESET}")
         head.addWidget(name)
         head.addWidget(category)
@@ -271,6 +272,7 @@ COLUMNS = [
     ("Product", "name", 26),
     ("SKU", "sku", 12),
     ("Category", "category", 17),
+    ("Brand", "brand", 11),
     ("Supplier", "supplier", 15),
     ("Price", "price", 11),
     ("Stock", "stock_qty", 22),
@@ -457,7 +459,16 @@ class ProductRow(QFrame):
         raw = product["name"]
         name = ElidedLabel(raw.title() if raw.isupper() else raw)
         name.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {INK}; {RESET}")
-        cl.addWidget(name, 1)
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(0)
+        text_col.addWidget(name)
+        tag = " \u00b7 ".join(x for x in (product.get("size"), product.get("for_group")) if x)
+        if tag:                       # clothing: size and who it is for
+            sub = ElidedLabel(tag)
+            sub.setStyleSheet(f"font-size: 11px; color: {MUTED}; {RESET}")
+            text_col.addWidget(sub)
+        cl.addLayout(text_col, 1)
         row.addWidget(cell, COLUMNS[0][2])
 
         # sku
@@ -482,15 +493,20 @@ class ProductRow(QFrame):
         cat_l.addStretch()
         row.addWidget(cat_cell, COLUMNS[2][2])
 
+        # brand
+        brand = ElidedLabel(str(product.get("brand") or "\u2014"))
+        brand.setStyleSheet(f"font-size: 13px; color: {MUTED}; {RESET}")
+        row.addWidget(brand, COLUMNS[3][2])
+
         # supplier (from the purchase order it came in on)
         supplier = ElidedLabel(str(product.get("supplier") or "—"))
         supplier.setStyleSheet(f"font-size: 13px; color: {MUTED}; {RESET}")
-        row.addWidget(supplier, COLUMNS[3][2])
+        row.addWidget(supplier, COLUMNS[4][2])
 
         # price
         price = QLabel(f"₱{product['price']:,.2f}")
         price.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {INK}; {RESET}")
-        row.addWidget(price, COLUMNS[4][2])
+        row.addWidget(price, COLUMNS[5][2])
 
         # stock
         state = stock_state(product)
@@ -511,7 +527,7 @@ class ProductRow(QFrame):
         sl.addWidget(qty)
         sl.addSpacing(4)
         sl.addWidget(status)
-        row.addWidget(stock_cell, COLUMNS[5][2])
+        row.addWidget(stock_cell, COLUMNS[6][2])
 
         # actions
         actions = QWidget()
@@ -683,17 +699,16 @@ class InventoryView(QWidget):
         tools.setContentsMargins(H_PAD, 14, H_PAD, 10)
         tools.setSpacing(10)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search product name or SKU...")
+        self.search_input.setPlaceholderText("Search name, SKU or brand...")
         self.search_input.setFixedHeight(34)
         self.search_input.setStyleSheet(
             "QLineEdit { padding: 4px 16px; border: 1px solid #DCCFBC; border-radius: 17px; background: #FFFFFF; color: #344054; font-size: 12px; }"
             f"QLineEdit:focus {{ border-color: {GOLD}; }}"
         )
-        self.category_filter = StyledComboBox()
-        self.category_filter.addItems(["Category: All", "Clothing", "Skincare"])
-        self.category_filter.setFixedSize(160, 34)
+        self.category_filter = CategoryFilterCombo()
+        self.category_filter.setFixedSize(200, 34)
         self.status_filter = StyledComboBox()
-        self.status_filter.addItems(["Status: All Stock", "In Stock", "Low Stock", "Expiring Soon", "Archived"])
+        self.status_filter.addItems(["Status: All Stock", "In Stock", "Low Stock", "Expiring Soon", "Out of Stock", "Archived"])
         self.status_filter.setFixedSize(185, 34)
         tools.addWidget(self.search_input, 1)
         self.sort_filter = StyledComboBox()
@@ -710,9 +725,11 @@ class InventoryView(QWidget):
         meta.setContentsMargins(H_PAD, 0, H_PAD, 8)
         self.showing_lbl = QLabel("Showing 0 of 0 products")
         self.showing_lbl.setStyleSheet(f"font-size: 12px; color: {MUTED}; {RESET}")
+        meta.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         meta.addWidget(self.showing_lbl)
         meta.addStretch()
         toggle = QFrame()
+        toggle.setFixedHeight(32)      # keep it small when the list is empty
         toggle.setStyleSheet("QFrame { background: #F8F3E8; border: 1px solid #E6DECB; border-radius: 9px; }")
         tl = QHBoxLayout(toggle)
         tl.setContentsMargins(3, 3, 3, 3)
@@ -775,11 +792,13 @@ class InventoryView(QWidget):
         self.body.addWidget(self.scroll)
         card_l.addWidget(self.body, 1)
 
-        self.empty_label = QLabel("No products found.")
+        self.empty_label = QLabel(
+            "<div style='font-size:15px; font-weight:600;'>No products found</div>"
+            "<div style='font-size:12px;'>Try a different search or filter.</div>")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setMinimumHeight(140)
-        self.empty_label.setStyleSheet(f"color: {MUTED}; font-size: 13px; {RESET}")
-        card_l.addWidget(self.empty_label)
+        self.empty_label.setStyleSheet(f"color: {MUTED}; {RESET}")
+        card_l.addWidget(self.empty_label, 1)      # takes the free space, centered
         self.empty_label.hide()
 
         # footer: rows per page | pagination
@@ -854,15 +873,13 @@ class InventoryView(QWidget):
         self.restock_banner.show()
         self._restock_timer.start(10000)
 
-    def set_category_options(self, categories):
+    def set_category_options(self, categories, has_uncategorized=False):
         """Refill the Category filter, keeping the current choice if it still exists."""
-        chosen = self.category_filter.currentText()
-        self.category_filter.blockSignals(True)
-        self.category_filter.clear()
-        self.category_filter.addItems(["Category: All"] + list(categories))
-        index = self.category_filter.findText(chosen)
-        self.category_filter.setCurrentIndex(index if index >= 0 else 0)
-        self.category_filter.blockSignals(False)
+        self.category_filter.set_categories(categories, has_uncategorized)
+
+    def selected_category(self):
+        """What the Category filter is set to: 'All', a group, a full category or the 'none' marker."""
+        return self.category_filter.selected_value()
 
     def set_summary(self, total, low_stock, expiring_soon, out_of_stock):
         self.stat_total.set_value(total)

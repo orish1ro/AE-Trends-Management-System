@@ -1,3 +1,4 @@
+from models.options_model import OptionsModel
 from PyQt6.QtWidgets import QMessageBox
 from views.supplier_dialog import SupplierManagerDialog
 from utils.errors import report, safe_slot
@@ -30,7 +31,11 @@ class POController:
     @safe_slot("Purchase Orders Error")
     def refresh_available_products(self):
         if self.inv_model:
-            self.view.set_available_products(self.inv_model.get_all_products())
+            try:
+                brands = OptionsModel(self.model.db).get_brands()
+            except Exception:  # noqa: BLE001 - the brand list is a convenience
+                brands = []
+            self.view.set_available_products(self.inv_model.get_all_products(), brands)
 
     @safe_slot("Purchase Orders Error")
     def refresh_suppliers(self):
@@ -66,18 +71,18 @@ class POController:
             except Exception as e:  # noqa: BLE001
                 report(e, dialog, "Could Not Update Supplier", context="update_supplier")
 
-        def on_delete(supplier_id):
+        def on_archive(supplier_id):
             try:
-                success, reason = self.model.delete_supplier(supplier_id)
+                success, reason = self.model.archive_supplier(supplier_id)
                 if success:
                     dialog.set_suppliers(self.model.get_all_suppliers())
                     self.refresh_suppliers()
                 else:
-                    QMessageBox.warning(dialog, "Can't Delete Supplier", reason)
+                    QMessageBox.warning(dialog, "Can't Archive Supplier", reason)
             except Exception as e:  # noqa: BLE001
-                report(e, dialog, "Could Not Delete Supplier", context="delete_supplier")
+                report(e, dialog, "Could Not Archive Supplier", context="archive_supplier")
 
-        dialog = SupplierManagerDialog(self.view, suppliers, on_add, on_update, on_delete)
+        dialog = SupplierManagerDialog(self.view, suppliers, on_add, on_update, on_archive)
         dialog.exec()
 
     @safe_slot("Purchase Orders Error")

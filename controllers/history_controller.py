@@ -1,4 +1,5 @@
 """CONTROLLER: Transaction History."""
+from models.history_model import sort_rows
 from PyQt6.QtWidgets import QMessageBox
 from utils.errors import report, safe_slot
 from utils.validators import ValidationError, clean_date_range
@@ -67,7 +68,8 @@ class HistoryController:
         elif tab == "Inventory Purchases":
             rows = purchases
         else:
-            rows = sorted(orders + purchases, key=lambda r: r["id"], reverse=True)
+            rows = orders + purchases
+        rows = sort_rows(rows, f.get("sort") or "Newest First")
 
         self.current_rows = rows
         self.current_tab = tab

@@ -152,15 +152,15 @@ class SupplierFormDialog(QDialog):
 
 
 class SupplierManagerDialog(QDialog):
-    """Lists every supplier with Edit / Delete actions, plus an Add button.
+    """Lists every supplier with Edit / Archive actions, plus an Add button.
     Reads and writes go through the three callbacks passed in - this
     dialog never touches the database or model directly."""
 
-    def __init__(self, parent, suppliers, on_add, on_update, on_delete):
+    def __init__(self, parent, suppliers, on_add, on_update, on_archive):
         super().__init__(parent)
         self.on_add = on_add
         self.on_update = on_update
-        self.on_delete = on_delete
+        self.on_archive = on_archive
 
         self.setWindowTitle("Manage Suppliers")
         clamp_dialog_min(self, 640, 420)
@@ -211,6 +211,8 @@ class SupplierManagerDialog(QDialog):
 
     def set_suppliers(self, suppliers):
         self.suppliers = suppliers
+        self.table.clearSpans()       # the "No suppliers yet" message spans the row; clear it first
+        self.table.setRowCount(0)
         self.table.setRowCount(len(suppliers))
         for row, sup in enumerate(suppliers):
             self.table.setItem(row, 0, QTableWidgetItem(sup["name"]))
@@ -227,13 +229,14 @@ class SupplierManagerDialog(QDialog):
             edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             edit_btn.clicked.connect(lambda checked, s=sup: self._edit_supplier(s))
 
-            delete_btn = QPushButton("Delete")
-            delete_btn.setStyleSheet(SMALL_DANGER_BTN_STYLE)
-            delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            delete_btn.clicked.connect(lambda checked, s=sup: self._delete_supplier(s))
+            archive_btn = QPushButton("Archive")
+            archive_btn.setStyleSheet(SMALL_BTN_STYLE)
+            archive_btn.setToolTip("Hide this supplier (past orders keep it)")
+            archive_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            archive_btn.clicked.connect(lambda checked, s=sup: self._archive_supplier(s))
 
             a_layout.addWidget(edit_btn)
-            a_layout.addWidget(delete_btn)
+            a_layout.addWidget(archive_btn)
             self.table.setCellWidget(row, 3, actions)
 
         if not suppliers:
@@ -254,13 +257,15 @@ class SupplierManagerDialog(QDialog):
             values = dlg.get_values()
             self.on_update(supplier["id"], values["name"], values["location"], values["contact"])
 
-    def _delete_supplier(self, supplier):
+    def _archive_supplier(self, supplier):
         reply = QMessageBox.question(
             self,
-            "Delete Supplier",
-            f"Are you sure you want to delete \"{supplier['name']}\"?\n\nThis cannot be undone.",
+            "Archive Supplier",
+            f"Archive \"{supplier['name']}\"?\n\nIt will be hidden from the supplier list and "
+            "dropdowns. Past purchase orders keep it, and adding a supplier with the same "
+            "name brings it back.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self.on_delete(supplier["id"])
+            self.on_archive(supplier["id"])

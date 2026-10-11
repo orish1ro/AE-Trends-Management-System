@@ -192,9 +192,13 @@ class TransactionHistoryView(QWidget):
         self.page_scroll.setWidgetResizable(True)
         self.page_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.page_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        # The page always fits the window width - it never scrolls sideways.
+        self.page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
         self.content_widget = QWidget()
         self.content_widget.setStyleSheet("background-color: #F7F3EB;")
+        # Ignored width = the page is exactly as wide as the window, never wider.
+        self.content_widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         
         # This replaces the old 'outer' layout and sits inside the scroll area
         outer = QVBoxLayout(self.content_widget)
@@ -370,15 +374,26 @@ class TransactionHistoryView(QWidget):
         self.platform_filter = ArrowComboBox()
         self.payment_filter = ArrowComboBox()
         self.staff_filter = ArrowComboBox()
+        self.sort_filter = ArrowComboBox()          # Newest First / Oldest First / Total / Name
+        self.sort_filter.addItems(["Newest First", "Oldest First", "Total: High to Low",
+                                   "Total: Low to High", "Name: A to Z", "Name: Z to A"])
 
         for combo in (
             self.status_filter,
             self.platform_filter,
             self.payment_filter,
             self.staff_filter,
+            self.sort_filter,
         ):
             combo.setStyleSheet(FILTER_CONTROL_STYLE)
             combo.setMaxVisibleItems(12)
+            # Let the dropdowns shrink and share the row evenly, so the filter
+            # bar always fits the window instead of pushing the page wider.
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            combo.setMinimumContentsLength(12)
+            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             combo.currentTextChanged.connect(self.filters_changed.emit)
 
         self.clear_btn = QPushButton("Clear Filters")
@@ -392,11 +407,11 @@ class TransactionHistoryView(QWidget):
         filt_row.addWidget(self.date_from)
         filt_row.addWidget(QLabel("To:"))
         filt_row.addWidget(self.date_to)
-        filt_row.addWidget(self.status_filter)
-        filt_row.addWidget(self.platform_filter)
-        filt_row.addWidget(self.payment_filter)
-        filt_row.addWidget(self.staff_filter)
-        filt_row.addStretch()
+        filt_row.addWidget(self.status_filter, 1)
+        filt_row.addWidget(self.platform_filter, 1)
+        filt_row.addWidget(self.payment_filter, 1)
+        filt_row.addWidget(self.staff_filter, 1)
+        filt_row.addWidget(self.sort_filter, 1)
         filt_row.addWidget(self.clear_btn)
 
         for i in range(filt_row.count()):
@@ -442,12 +457,12 @@ class TransactionHistoryView(QWidget):
         self.table.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        # Columns are sized to their content (see _fit_columns), so nothing is
-        # ever cut off. On a very narrow window a scrollbar appears instead.
+        # Columns are sized to the table width (see _fit_columns), so the table
+        # never scrolls sideways; long text is shortened with "..." if needed.
         self.table.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.table.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
 
         # Raised to 500 to guarantee it fits 10 rows + 40px Header + Borders safely
         self.table.setFixedHeight(500)
@@ -696,6 +711,7 @@ class TransactionHistoryView(QWidget):
         self.platform_filter.setCurrentIndex(0)
         self.payment_filter.setCurrentIndex(0)
         self.staff_filter.setCurrentIndex(0)
+        self.sort_filter.setCurrentIndex(0)
 
         self.date_from.setDate(
             QDate.currentDate().addYears(-1)
@@ -743,6 +759,7 @@ class TransactionHistoryView(QWidget):
             "platform": self.platform_filter.currentText(),
             "payment_method": self.payment_filter.currentText(),
             "staff": self.staff_filter.currentText(),
+            "sort": self.sort_filter.currentText(),
         }
 
     # ==============================================================
@@ -826,11 +843,20 @@ class TransactionHistoryView(QWidget):
             widths.append(max(content, header.sectionSizeHint(col)) + 12)
         widths += [self.STATUS_COL_WIDTH, self.VIEW_COL_WIDTH]
 
-        # If there is spare room, share it out so the table fills the card.
-        spare = table.viewport().width() - sum(widths)
+        avail = table.viewport().width()
+        spare = avail - sum(widths)
         if spare > 0:
+            # Spare room: share it out so the table fills the card.
             share = spare // (count - 2)
             widths = [w + share for w in widths[:-2]] + widths[-2:]
+        elif avail > 0:
+            # Not enough room: squeeze the flexible columns so everything
+            # fits the card width (no horizontal scrolling).
+            flex_total = sum(widths[:-2])
+            flex_avail = max(avail - self.STATUS_COL_WIDTH - self.VIEW_COL_WIDTH,
+                             (count - 2) * 50)
+            ratio = flex_avail / flex_total if flex_total else 1
+            widths = [max(50, int(w * ratio)) for w in widths[:-2]] + widths[-2:]
 
         for col, width in enumerate(widths):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
@@ -1077,7 +1103,7 @@ def _dlg_card(title):
     card.setObjectName("dlgCard")
     card.setStyleSheet(
         f"QFrame#dlgCard {{ background: #FFFFFF; border: 1px solid {DLG_CARD_BORDER}; "
-        "border-radius: 12px; }}"
+        "border-radius: 12px; }"
     )
     lay = QVBoxLayout(card)
     lay.setContentsMargins(18, 16, 18, 16)

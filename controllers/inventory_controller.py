@@ -21,7 +21,7 @@ class InventoryController:
 
         
         self.view.search_input.textChanged.connect(self.load_products)
-        self.view.category_filter.currentTextChanged.connect(self.load_products)
+        self.view.category_filter.currentIndexChanged.connect(self.load_products)
         self.view.status_filter.currentTextChanged.connect(self.load_products)
         self.view.add_product_btn.clicked.connect(self.open_add_product_dialog)
         self.view.edit_product_requested.connect(self.open_edit_product_dialog)
@@ -29,29 +29,40 @@ class InventoryController:
         self.view.archive_product_requested.connect(lambda product: self.archive_product(product))
 
     def _sync_category_filter(self):
-        """Keep the Category filter in step with the products: a category typed
-        into Add New Product (e.g. "Accessories") shows up here automatically."""
-        groups = []
-        for product in self.model.get_all_products():
-            main = (product.get("category") or "").split("\u2022")[0].strip()
-            if main and main.lower() not in (g.lower() for g in groups):
-                groups.append(main)
-        first = [g for g in ("Clothing", "Skincare") if g.lower() in (x.lower() for x in groups)]
-        rest = sorted((g for g in groups if g not in first), key=str.lower)
-        self.view.set_category_options(first + rest)
+        """Fill the Category filter from the same list as Manage Categories and the
+        Add New Product dropdown (grouped as Clothing > Tops ...), so the filter always
+        matches what you can pick. A category you hid is left out, unless a product
+        still uses it - then it stays so that product can still be found."""
+        try:
+            products = (self.model.get_all_products()
+                        + self.model.get_all_products(archived=True))
+        except Exception:
+            products = []
+        used = [(p.get("category") or "").strip() for p in products]
+        try:
+            managed = self.options_model.get_categories()      # visible categories only
+        except Exception:
+            managed = []
+        names = list(dict.fromkeys([n for n in managed if n] + [n for n in used if n]))
+        self.view.set_category_options(names,
+                                       has_uncategorized=any(not n for n in used))
 
     @safe_slot("Inventory Error")
     def load_products(self):
         self._sync_category_filter()
         search = self.view.search_input.text().strip()
-        category = self.view.category_filter.currentText()
+        category = self.view.selected_category()
         status = self.view.status_filter.currentText()
         archived = (status == "Archived")
         self.view.showing_archived = archived
         if archived:
             products = self.model.get_all_products(search, category, "All", archived=True)
+        elif status == "Out of Stock":
+            # Zero-stock products are auto-hidden everywhere else; this filter shows them.
+            products = self.model.get_all_products(search, category, "All", only_out_of_stock=True)
         else:
-            products = self.model.get_all_products(search, category, status)
+            products = self.model.get_all_products(search, category, status,
+                                                   hide_out_of_stock=True)
         self.view.display_products(products)
         self._refresh_summary()
 
@@ -59,10 +70,11 @@ class InventoryController:
         """Overview stat cards reflect the whole (unfiltered) inventory,
         not just the current search/filter results."""
         all_products = self.model.get_all_products()
-        total = len(all_products)
-        low_stock = sum(1 for p in all_products if p["stock_qty"] > 0 and p["status"] == "Low Stock")
-        expiring = sum(1 for p in all_products if p["status"] in ("Expiring Soon", "Expired"))
-        out_of_stock = sum(1 for p in all_products if p["stock_qty"] <= 0)
+        in_stock = [p for p in all_products if p["stock_qty"] > 0]   # what the list shows
+        total = len(in_stock)
+        low_stock = sum(1 for p in in_stock if p["status"] == "Low Stock")
+        expiring = sum(1 for p in in_stock if p["status"] in ("Expiring Soon", "Expired"))
+        out_of_stock = len(all_products) - len(in_stock)
         self.view.set_summary(total, low_stock, expiring, out_of_stock)
 
     def _notify_change(self):
@@ -117,9 +129,30 @@ class InventoryController:
         except Exception:
             categories = None   # fall back to the dialog's own list; never block adding a product
 
+        try:
+            brands = self.options_model.get_brands()
+        except Exception:
+            brands = []   # the brand list is a convenience, never block adding a product
+
         dialog = ProductDialog(self.view, product=product, po_items=po_items,
                                existing_products=existing_products, suppliers=suppliers,
-                               categories=categories)
+                               categories=categories, brands=brands)
+
+        def manage_brands():
+            try:
+                manager = ManageOptionsDialog(
+                    dialog, "brand", "products",
+                    loader=lambda: self.options_model.entries("brand"),
+                    adder=lambda n: self.options_model.add("brand", n),
+                    hider=lambda n: self.options_model.hide("brand", n),
+                    shower=lambda n: self.options_model.show("brand", n),
+                    plural="brands")
+                manager.exec()
+                dialog.set_brands(self.options_model.get_brands(), dropped=manager.hidden)
+            except Exception as exc:  # noqa: BLE001
+                report(exc, dialog, "Manage Brands Error", context="manage brands")
+
+        dialog.manage_brands_requested.connect(manage_brands)
 
         def manage_categories():
             try:
@@ -127,10 +160,12 @@ class InventoryController:
                     dialog, "category", "products",
                     loader=lambda: self.options_model.entries("category"),
                     adder=lambda n: self.options_model.add("category", n),
-                    remover=lambda n: self.options_model.remove("category", n),
+                    hider=lambda n: self.options_model.hide("category", n),
+                    shower=lambda n: self.options_model.show("category", n),
                     plural="categories")
                 manager.exec()
-                dialog.set_categories(self.options_model.get_categories(), dropped=manager.removed)
+                dialog.set_categories(self.options_model.get_categories(), dropped=manager.hidden)
+                self._sync_category_filter()      # a new category shows in the filter at once
             except Exception as exc:  # noqa: BLE001
                 report(exc, dialog, "Manage Categories Error", context="manage categories")
 
@@ -189,10 +224,21 @@ class InventoryController:
 
                 if target.get("id") is not None:
                     self.model.update_product(target["id"], name, target.get("sku", ""), cat, price, stock, reorder, exp, image_value,
-                                              supplier=values.get("supplier", ""))
+                                              supplier=values.get("supplier", ""),
+                                              brand=values.get("brand", ""),
+                                              clothing_size=values.get("size", ""),
+                                              for_group=values.get("for_group", ""))
                 else:
                     self.model.add_product(name, cat, price, stock, reorder, exp, sku=values.get("sku", ""), image_path=image_value,
-                                           supplier=values.get("supplier", ""))
+                                           supplier=values.get("supplier", ""),
+                                           brand=values.get("brand", ""),
+                                           clothing_size=values.get("size", ""),
+                                           for_group=values.get("for_group", ""))
+                try:   # a brand typed here joins the saved list, so it can be managed later
+                    if values.get("brand", "").strip():
+                        self.options_model.add_brand(values["brand"])
+                except ValidationError:
+                    pass
                 try:   # a category typed here joins the saved list, so it can be managed later
                     if cat and cat.strip():
                         self.options_model.add_category(cat)

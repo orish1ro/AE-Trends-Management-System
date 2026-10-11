@@ -205,6 +205,19 @@ class DatabaseManager:
                                         AND PlatformID NOT IN (SELECT PlatformID FROM Orders)""")
                         conn.executemany("INSERT OR IGNORE INTO Platform (PlatformName) VALUES (?)",
                                          [(p,) for p in DEFAULT_PLATFORMS])
+                conn.execute("""CREATE TABLE IF NOT EXISTS Brand (
+                    BrandID INTEGER PRIMARY KEY AUTOINCREMENT,
+                    BrandName TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    IsHidden INTEGER NOT NULL DEFAULT 0)""")
+                pcols = {r[1] for r in conn.execute("PRAGMA table_info(Product)")}
+                for col in ("Brand", "ClothingSize", "ForGroup"):
+                    if pcols and col not in pcols:
+                        conn.execute(f"ALTER TABLE Product ADD COLUMN {col} TEXT")
+                # Entries are hidden, never deleted (IsHidden = 1 keeps them out of dropdowns).
+                for table in ("Platform", "Bank", "Category"):
+                    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+                    if cols and "IsHidden" not in cols:
+                        conn.execute(f"ALTER TABLE {table} ADD COLUMN IsHidden INTEGER NOT NULL DEFAULT 0")
                 if version < 1:
                     conn.execute("PRAGMA user_version = 1")
                 conn.commit()

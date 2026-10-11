@@ -12,11 +12,11 @@ from PyQt6.QtWidgets import (
 from models.inventory_model import EXPIRING_WITHIN_DAYS
 from PyQt6.QtGui import QColor
 from views.styled_dropdown import StyledComboBox
-from views.responsive import screen_width_cap
+from views.responsive import screen_width_cap, clamp_dialog_min
 from views.inventory_view import Thumb
 from views.ui_icons import set_svg_icon, svg_icon
 from utils.product_images import compress_product_image
-from utils.validators import ValidationError
+from utils.validators import ValidationError, CLOTHING_SIZES, FOR_GROUPS, is_clothing
 
 RESET = "background: transparent; border: none;"
 
@@ -393,11 +393,13 @@ class ProductDialog(QDialog):
 
     po_item_selected = pyqtSignal(dict)
     archive_requested = pyqtSignal()
+    manage_brands_requested = pyqtSignal()       # owner wants to add / hide brands
     manage_categories_requested = pyqtSignal()   # owner wants to add / remove categories
 
     def __init__(self, parent=None, product=None, categories=None, po_items=None, existing_products=None,
-                 suppliers=None):
+                 suppliers=None, brands=None):
         super().__init__(parent)
+        self._brands = list(brands or [])
         self.product = dict(product or {})
         self.is_edit = bool(self.product)
         self._image_value = self.product.get("image_path", "")
@@ -412,15 +414,18 @@ class ProductDialog(QDialog):
         self._selected_id = None
         self._select_buttons = {}
         self._existing_chip = "All"
+        self._categories = list(categories or [])
 
         self.setWindowTitle("Edit Product" if self.is_edit else "Add New Product")
         self.setModal(True)
-        self.setMinimumWidth(screen_width_cap(560 if self.is_edit else 1040, fraction=0.92, floor=420))
+        # Big enough that the whole form (Category + Manage, Brand, Size / For ...) fits without clipping
+        clamp_dialog_min(self, 700 if self.is_edit else 1240, 780, fraction=0.94)
         self.setStyleSheet(f"QDialog {{ background: {BG}; }}")
 
         if categories is None:
             found = [p.get("category", "") for p in self.existing_products if p.get("category")]
             categories = list(dict.fromkeys(DEFAULT_CATEGORIES + found))
+        self._categories = list(categories)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(32, 28, 32, 26)
@@ -509,6 +514,26 @@ class ProductDialog(QDialog):
         f.setFixedHeight(FIELD_H)
         return f
 
+    @staticmethod
+    def _set_combo_value(combo, value):
+        """Select `value` in a fixed list; anything else = the first (blank) entry."""
+        index = combo.findText((value or "").strip(), Qt.MatchFlag.MatchFixedString)
+        combo.setCurrentIndex(index if index > 0 else 0)
+
+    def _sync_clothing_fields(self, *_args):
+        """Size and For only make sense for Clothing, so they show only then."""
+        self.clothing_row.setVisible(is_clothing(self.cat_in.currentText()))
+
+    def set_brands(self, brands, dropped=()):
+        """Refill the Brand dropdown (after Manage). Hidden ones are cleared from the field."""
+        typed = self.brand_in.currentText()
+        self.brand_in.blockSignals(True)
+        self.brand_in.clear()
+        self.brand_in.addItems(list(brands))
+        self.brand_in.blockSignals(False)
+        gone = {d.lower() for d in dropped}
+        self.brand_in.setEditText("" if typed.strip().lower() in gone else typed)
+
     def set_categories(self, categories, dropped=()):
         """Refill the Category dropdown (after Manage). `dropped` names that were just
         removed are cleared from the field; anything else typed is kept."""
@@ -519,11 +544,14 @@ class ProductDialog(QDialog):
         self.cat_in.blockSignals(False)
         gone = {d.lower() for d in dropped}
         self.cat_in.setEditText("" if typed.strip().lower() in gone else typed)
+        self._categories = list(categories)
+        if hasattr(self, "_chip_row"):
+            self._fill_group_chips()          # the group chips follow the managed list
 
     def _build_form_panel(self, categories):
         card = self._card("formCard")
         if not self.is_edit:
-            card.setFixedWidth(430)
+            card.setFixedWidth(620)
         outer = QVBoxLayout(card)
         outer.setContentsMargins(4, 4, 4, 4)
 
@@ -650,6 +678,45 @@ class ProductDialog(QDialog):
         self.supplier_in.addItems(self.suppliers)
         self.supplier_in.setCurrentText(self.product.get("supplier", "") or "")
         self.supplier_in.setFixedHeight(FIELD_H)
+        # -- Brand (any product) + Size / For (Clothing only) -------------
+        self.brand_in = StyledComboBox()
+        self.brand_in.setEditable(True)
+        self.brand_in.addItems(self._brands)
+        self.brand_in.setCurrentText(self.product.get("brand", "") or "")
+        self.brand_in.lineEdit().setPlaceholderText("Optional - pick or type a brand")
+        self.brand_in.setFixedHeight(FIELD_H)
+        manage_brand = QPushButton("Manage")
+        manage_brand.setFixedHeight(FIELD_H)
+        manage_brand.setCursor(Qt.CursorShape.PointingHandCursor)
+        manage_brand.setToolTip("Add or hide brands")
+        manage_brand.setStyleSheet(
+            "QPushButton { background: #F3EEE3; color: #4A4238; border: 1px solid #DDD5C3; "
+            "border-radius: 6px; padding: 0 12px; font-weight: 600; font-size: 12px; } "
+            "QPushButton:hover { background: #E9E2D2; }")
+        manage_brand.clicked.connect(lambda _=False: self.manage_brands_requested.emit())
+        self.brand_row = QWidget()
+        brand_lay = QHBoxLayout(self.brand_row)
+        brand_lay.setContentsMargins(0, 0, 0, 0)
+        brand_lay.setSpacing(8)
+        brand_lay.addWidget(self.brand_in, 1)
+        brand_lay.addWidget(manage_brand)
+
+        self.size_in = StyledComboBox()
+        self.size_in.addItems(["Select size"] + list(CLOTHING_SIZES))
+        self.size_in.setFixedHeight(FIELD_H)
+        self.for_in = StyledComboBox()
+        self.for_in.addItems(["Select"] + list(FOR_GROUPS))
+        self.for_in.setFixedHeight(FIELD_H)
+        self._set_combo_value(self.size_in, self.product.get("size", ""))
+        self._set_combo_value(self.for_in, self.product.get("for_group", ""))
+        self.clothing_row = QWidget()
+        clothing_lay = QHBoxLayout(self.clothing_row)
+        clothing_lay.setContentsMargins(0, 0, 0, 0)
+        clothing_lay.setSpacing(10)
+        clothing_lay.addLayout(labeled_field("Size", self.size_in), 1)
+        clothing_lay.addLayout(labeled_field("For", self.for_in), 1)
+        self.cat_in.currentTextChanged.connect(self._sync_clothing_fields)
+
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(18)
@@ -659,6 +726,9 @@ class ProductDialog(QDialog):
         grid.addLayout(labeled_field("Stock Quantity", self.stock_in, required=True), 1, 1)
         grid.addLayout(labeled_field("Reorder Level", self.reorder_in), 2, 0)
         grid.addLayout(labeled_field("Supplier", self.supplier_in), 2, 1)
+        grid.addLayout(labeled_field("Brand", self.brand_row), 3, 0)
+        grid.addWidget(self.clothing_row, 3, 1)
+        self._sync_clothing_fields()
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         form.addLayout(grid)
@@ -772,30 +842,11 @@ class ProductDialog(QDialog):
         self._existing_search.textChanged.connect(self._refresh_existing)
         lay.addWidget(self._existing_search)
 
-        chip_row = QHBoxLayout()
-        chip_row.setSpacing(8)
-        groups = ["All"]
-        for p in self.existing_products:
-            g = (p.get("category") or "").split("•")[0].strip()
-            if g and g not in groups:
-                groups.append(g)
+        self._chip_row = QHBoxLayout()
+        self._chip_row.setSpacing(8)
         self._chip_buttons = []
-        for g in groups[:6]:
-            b = QPushButton(g)
-            b.setCheckable(True)
-            b.setChecked(g == "All")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setFixedHeight(30)
-            b.setStyleSheet(
-                f"QPushButton {{ background: {GOLD_BG}; color: #5E554C; border: 1px solid {BORDER_ALT};"
-                " border-radius: 15px; padding: 0 16px; font-size: 12px; }"
-                f"QPushButton:hover {{ border-color: {GOLD}; }}"
-                f"QPushButton:checked {{ background: {GOLD}; color: white; border-color: {GOLD}; font-weight: bold; }}")
-            b.clicked.connect(lambda _c, name=g: self._set_existing_chip(name))
-            chip_row.addWidget(b)
-            self._chip_buttons.append((g, b))
-        chip_row.addStretch()
-        lay.addLayout(chip_row)
+        self._fill_group_chips()
+        lay.addLayout(self._chip_row)
 
         self._existing_scroll = QScrollArea()
         self._existing_scroll.setWidgetResizable(True)
@@ -818,6 +869,42 @@ class ProductDialog(QDialog):
         lay.addWidget(self._existing_count)
         self._refresh_existing()
         return card
+
+    def _fill_group_chips(self):
+        """(Re)builds the All / Clothing / Skincare ... chips. Groups come from the managed
+        category list first (same as the Category dropdown), then from any product that
+        uses a group not in that list, so a product is never left without a chip."""
+        while self._chip_row.count():
+            item = self._chip_row.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        groups = ["All"]
+        sources = list(self._categories) + [p.get("category") or "" for p in self.existing_products]
+        for cat in sources:
+            g = str(cat).split("•")[0].strip()
+            if g and g.lower() not in [x.lower() for x in groups]:
+                groups.append(g)
+        groups = groups[:6]
+        if self._existing_chip not in groups:
+            self._existing_chip = "All"
+        self._chip_buttons = []
+        for g in groups:
+            b = QPushButton(g)
+            b.setCheckable(True)
+            b.setChecked(g == self._existing_chip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setFixedHeight(30)
+            b.setStyleSheet(
+                f"QPushButton {{ background: {GOLD_BG}; color: #5E554C; border: 1px solid {BORDER_ALT};"
+                " border-radius: 15px; padding: 0 16px; font-size: 12px; }"
+                f"QPushButton:hover {{ border-color: {GOLD}; }}"
+                f"QPushButton:checked {{ background: {GOLD}; color: white; border-color: {GOLD}; font-weight: bold; }}")
+            b.clicked.connect(lambda _c, name=g: self._set_existing_chip(name))
+            self._chip_row.addWidget(b)
+            self._chip_buttons.append((g, b))
+        self._chip_row.addStretch()
+        if hasattr(self, "_existing_list"):
+            self._refresh_existing()
 
     def _set_existing_chip(self, name):
         self._existing_chip = name
@@ -969,6 +1056,20 @@ class ProductDialog(QDialog):
         inventory product already exists."""
         self.name_in.setText(item.get("product_name", ""))
         self._set_supplier(item.get("supplier", ""))   # filled in from the purchase order
+        # brand / clothing size ordered on the purchase order carry into Inventory
+        if item.get("brand"):
+            self.brand_in.setCurrentText(item["brand"])
+        if item.get("category") and not self.cat_in.currentText().strip():
+            self.cat_in.setCurrentText(item["category"])
+        if item.get("clothing_size"):
+            if not self.cat_in.currentText().strip():
+                clothing = next((self.cat_in.itemText(i) for i in range(self.cat_in.count())
+                                 if is_clothing(self.cat_in.itemText(i))), "")
+                if clothing:
+                    self.cat_in.setCurrentText(clothing)
+            self._set_combo_value(self.size_in, item["clothing_size"])
+        if item.get("for_group"):
+            self._set_combo_value(self.for_in, item["for_group"])
         unit_cost = item.get("unit_cost")
         if unit_cost is not None:
             self.price_in.setText(f"{unit_cost:.2f}")
@@ -1016,6 +1117,9 @@ class ProductDialog(QDialog):
         self.sku_in.setReadOnly(True)
         self.sku_in.setStyleSheet(FIELD_STYLE + f"QLineEdit {{ background: {GOLD_BG}; color: {TEXT_MUTED}; }}")
         self.cat_in.setCurrentText(product.get("category", ""))
+        self.brand_in.setCurrentText(product.get("brand", "") or "")
+        self._set_combo_value(self.size_in, product.get("size", ""))
+        self._set_combo_value(self.for_in, product.get("for_group", ""))
         if product.get("supplier"):
             self._set_supplier(product["supplier"])
         self.price_in.setText(self._fmt_number(product.get("price")))
@@ -1103,6 +1207,9 @@ class ProductDialog(QDialog):
             "stock_qty": self.stock_in.text().strip(),
             "reorder_level": self.reorder_in.text().strip(),
             "supplier": self.supplier_in.currentText().strip(),
+            "brand": self.brand_in.currentText().strip(),
+            "size": self.size_in.currentText() if self.size_in.currentIndex() > 0 else "",
+            "for_group": self.for_in.currentText() if self.for_in.currentIndex() > 0 else "",
             "expiration_date": (
                 self.exp_date.date().toString("yyyy-MM-dd")
                 if self.exp_toggle.isChecked() else "-"

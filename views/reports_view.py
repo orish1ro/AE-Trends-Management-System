@@ -2,12 +2,12 @@ from datetime import datetime
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QTableWidget,
-    QTableWidgetItem, QHeaderView, QPushButton, QDateEdit, QFileDialog,
+    QTableWidgetItem, QHeaderView, QPushButton, QDateEdit,
     QMessageBox, QToolButton, QGraphicsDropShadowEffect, QScrollArea, QLineEdit,
-    QMenu, QButtonGroup
+    QButtonGroup
 )
 from PyQt6.QtCore import Qt, QDate, pyqtSignal, QByteArray
-from PyQt6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap, QAction
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from views.styled_dropdown import StyledComboBox
 from views.report_charts import LineAreaChart, DonutChart
@@ -66,7 +66,6 @@ class SortableItem(QTableWidgetItem):
 
 class ReportsView(QWidget):
     filters_changed = pyqtSignal(str, str)
-    export_requested = pyqtSignal(str, str)          # format ("csv"/"excel"/"pdf"), file path
     pl_granularity_changed = pyqtSignal(str)          # "Daily" / "Weekly" / "Monthly"
 
     def __init__(self):
@@ -146,29 +145,6 @@ class ReportsView(QWidget):
         meta_box.addWidget(self.updated_label)
         header.addLayout(meta_box)
 
-        header.addSpacing(14)
-
-        self.export_btn = QToolButton()
-        self.export_btn.setText("Export  ▾")
-        self.export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.export_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.export_btn.setStyleSheet(self._gold_button())
-        menu = QMenu(self.export_btn)
-        menu.setStyleSheet(f"""
-            QMenu {{ background: {CARD_BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 6px; }}
-            QMenu::item {{ padding: 7px 16px; border-radius: 6px; color: {INK}; font-size: 12px; }}
-            QMenu::item:selected {{ background: #FBF3DD; color: {GOLD_HOVER}; }}
-        """)
-        for label, fmt, ext, filt in (
-            ("Export as CSV", "csv", "sales_report.csv", "CSV Files (*.csv)"),
-            ("Export as Excel", "excel", "sales_report.xlsx", "Excel Files (*.xlsx)"),
-            ("Export as PDF", "pdf", "sales_report.pdf", "PDF Files (*.pdf)"),
-        ):
-            action = QAction(label, self)
-            action.triggered.connect(lambda checked=False, f=fmt, e=ext, ft=filt: self._choose_export_path(f, e, ft))
-            menu.addAction(action)
-        self.export_btn.setMenu(menu)
-        header.addWidget(self.export_btn)
         return header
 
     # ------------------------------------------------------------------ #
@@ -474,9 +450,6 @@ class ReportsView(QWidget):
     def _build_transactions_card(self):
         card = QFrame()
         card.setStyleSheet(self._card_style())
-        v = QVBoxLayout(card)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(0)
 
         header_row = QHBoxLayout()
         header_row.setContentsMargins(16, 13, 16, 8)
@@ -678,11 +651,14 @@ class ReportsView(QWidget):
 
     @staticmethod
     def _empty_state(table, message, sub=""):
+        table.clearSpans()
+        table.setRowCount(0)          # drops any old rows, spans and cell widgets
         table.setRowCount(1)
         table.setSpan(0, 0, 1, table.columnCount())
+        table.setRowHeight(0, 96)     # tall enough to show the message (default rows are 38px)
         label = QLabel(f"{message}" + (f"\n{sub}" if sub else ""))
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet(f"color: {MUTED}; font-size: 11px; padding: 24px; {RESET}")
+        label.setStyleSheet(f"color: {MUTED}; font-size: 11px; padding: 8px; {RESET}")
         table.setCellWidget(0, 0, label)
 
     # ------------------------------------------------------------------ #
@@ -722,11 +698,6 @@ class ReportsView(QWidget):
             self.from_date.date().toString("yyyy-MM-dd"),
             self.to_date.date().toString("yyyy-MM-dd"),
         )
-
-    def _choose_export_path(self, fmt, default_name, file_filter):
-        path, _ = QFileDialog.getSaveFileName(self, "Export Report", default_name, file_filter)
-        if path:
-            self.export_requested.emit(fmt, path)
 
     # ------------------------------------------------------------------ #
     # TRANSACTION TABLE: search / sort / pagination
@@ -776,7 +747,10 @@ class ReportsView(QWidget):
 
         start = self._txn_page * PAGE_SIZE
         page_rows = rows[start:start + PAGE_SIZE]
+        table.clearSpans()            # an earlier "empty" message must not hide real rows
+        table.setRowCount(0)
         table.setRowCount(len(page_rows))
+        table.verticalHeader().setDefaultSectionSize(38)
         for row_idx, data in enumerate(page_rows):
             table.setItem(row_idx, 0, SortableItem(data["id"], data["id"]))
             table.setItem(row_idx, 1, align_item(SortableItem(data["date"], data["date_sort"]), DATE))
@@ -942,7 +916,10 @@ class ReportsView(QWidget):
 
         start = self._top_products_page * SMALL_PAGE_SIZE
         page_rows = rows[start:start + SMALL_PAGE_SIZE]
+        table.clearSpans()            # an earlier "empty" message must not hide real rows
+        table.setRowCount(0)
         table.setRowCount(len(page_rows))
+        table.verticalHeader().setDefaultSectionSize(38)
         for row, p in enumerate(page_rows):
             table.setItem(row, 0, QTableWidgetItem(p["name"]))
             table.setItem(row, 1, align_item(QTableWidgetItem(f"{p['qty']} sold"), NUMBER))
@@ -991,7 +968,10 @@ class ReportsView(QWidget):
 
         start = self._inventory_page * SMALL_PAGE_SIZE
         page_rows = rows[start:start + SMALL_PAGE_SIZE]
+        table.clearSpans()            # an earlier "empty" message must not hide real rows
+        table.setRowCount(0)
         table.setRowCount(len(page_rows))
+        table.verticalHeader().setDefaultSectionSize(38)
         for row, item in enumerate(page_rows):
             table.setItem(row, 0, QTableWidgetItem(item["name"]))
             table.setItem(row, 1, QTableWidgetItem(item["category"] or "—"))
